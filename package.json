@@ -4,20 +4,27 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "dev": "vite build --watch & wrangler dev",
-    "deploy": "vite build && wrangler deploy",
+    "check": "pnpm run typecheck && pnpm run lint",
+    "deploy": "pnpm run build && wrangler deploy",
+    "dev": "vite build && wrangler dev",
     "keygen": "node scripts/keygen.mjs",
-    "consume-ready": "node scripts/consume-ready.mjs",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.scripts.json"
+    "decrypt": "node scripts/decrypt-handoff.mjs",
+    "lint": "oxlint --type-aware -c oxlint.config.ts",
+    "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && lefthook install || true",
+    "test": "vitest run",
+    "typecheck": "tsrs --noEmit -p tsconfig.json && tsrs --noEmit -p tsconfig.scripts.json",
+    "typecheck:scripts": "tsrs --noEmit -p tsconfig.scripts.json"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261103.1",
-    "@types/node": "^24.10.0",
-    "typescript": "^5.9.3",
-    "vite": "^7.1.12",
-    "wrangler": "^4.45.0"
-  },
-  "dependencies": {
-    "hono": "^4.10.4"
+    "@cloudflare/workers-types": "4.20251011.0",
+    "oxlint": "1.88.0",
+    "oxlint-tsgolint": "7.0.2004",
+    "@types/node": "24.19.2",
+    "lefthook": "2.2.2",
+    "tsrs": "0.21.0-ts7.1.0-beta",
+    "typescript": "7.0.2",
+    "vite": "8.3.4",
+    "vitest": "5.0.5",
+    "wrangler": "4.45.0"
   }
 }

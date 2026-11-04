@@ -6,7 +6,8 @@ export default defineConfig({
     outDir: "dist/client",
     emptyOutDir: true,
     rollupOptions: {
-      input: resolve(__dirname, "index.html"),
+      input: resolve(import.meta.dirname, "index.html"),
     },
   },
+  publicDir: "public",
 });

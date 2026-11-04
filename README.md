@@ -1,76 +1,49 @@
 # podaj
 
-Pass things securely to your remote bots — one-shot encrypted handoffs on Cloudflare Workers.
+One-shot encrypted handoffs for **environment variables** (KEY + secret value) to your remote agents.
 
-Encrypt credentials in the browser with an environment public key (`PODAJ1.` ciphertext only), store a single-use blob in KV, and decrypt locally with the matching private key.
+Encrypt in the browser with an environment public key (`PODAJ1.` only), store ciphertext once in Cloudflare KV, share the link, decrypt locally with the matching private key.
 
-Live worker: **https://podaj.hasparus.workers.dev**
+Live: **https://podaj.hasparus.workers.dev**
 
-## Stack
-
-- Cloudflare Worker (`podaj`) + KV
-- Hono API, static UI (Vite)
-- AES-256-GCM + RSA-OAEP-256 (`PODAJ1.` format)
-
-See [SECURITY.md](./SECURITY.md) for CSP, origin checks, size limits, and key handling.
-
-## Quick start
+## Fence (local gate)
 
 ```bash
-npm install
-npm run keygen
+pnpm install
+pnpm check      # tsrs typecheck + oxlint (type-aware via tsrs-lint)
+pnpm test       # PODAJ1 roundtrip
 ```
 
-Keys are written to `~/.local/share/podaj/` (`public.pem`, `private.pem`). **Never commit `private.pem`.**
+Pre-commit runs `pnpm check` and `pnpm test` (lefthook). Hook bypass via `git --no-verify` is blocked for agent shells.
 
-Copy the public key into `public/environments.json` (start from `public/environments.json.example`):
+## Keys
 
 ```bash
-node -e "
-const fs=require('fs');const os=require('os');const path=require('path');
-const pem=fs.readFileSync(path.join(os.homedir(),'.local/share/podaj/public.pem'),'utf8');
-const envs=[{slug:'default',name:'Default',description:'Primary handoff target',publicKeyPem:pem}];
-fs.writeFileSync('public/environments.json', JSON.stringify(envs, null, 2));
-"
+pnpm keygen
 ```
 
-## KV namespace
+Writes `~/.local/share/podaj/public.pem` and `private.pem` (never commit `private.pem`).
 
-Create a KV namespace and set its id in `wrangler.jsonc`:
+Copy the public key into `public/environments.json` (see `public/environments.json.example`).
+
+## Develop & deploy
 
 ```bash
-npx wrangler kv namespace create HANDOFFS
-# replace REPLACE_AFTER_kv_namespace_create in wrangler.jsonc with the returned id
+pnpm dev        # build client + wrangler dev
+pnpm deploy     # vite build + wrangler deploy (worker `podaj`)
 ```
 
-## Develop
-
-```bash
-npm run build
-npx wrangler dev
-```
-
-## Deploy
-
-```bash
-npm run deploy
-```
-
-This runs `vite build` then `wrangler deploy` for the **`podaj`** worker (default URL: `https://podaj.hasparus.workers.dev`).
-
-Ensure you are logged in (`npx wrangler login`) and that `wrangler.jsonc` has a real KV namespace id.
+KV binding `HANDOFFS` uses namespace `podaj-handoffs` (`87bb68bfae9148e2ae1a5d6781b1e48e` in `wrangler.jsonc`).
 
 ## Usage
 
-1. Open the app, pick an **Environment** (GitHub/Vercel-style sidebar).
-2. Fill auth profile, login URL, username, password → **encrypt & send**.
-3. Share the one-time `/h/{id}` link with the recipient.
-4. Recipient opens the link, selects `~/.local/share/podaj/private.pem`, and decrypts in the browser.
+1. Pick an **Environment** in the sidebar (one or many in `environments.json`).
+2. Add KEY + value rows → **Encrypt & send**.
+3. Share the one-time `/h/{id}` link.
+4. Recipient opens the link, selects `private.pem`, sees decrypted vars (or `pnpm decrypt` on the PODAJ1 blob).
 
-## Environments UI
+## What we cut
 
-Each environment in `public/environments.json` maps a human name to an RSA public key. Add multiple entries for staging/production targets; the sidebar switches active encryption keys without redeploying Worker code (redeploy after editing the JSON).
+No password vault, auth profiles, MCP/CLI surfaces, or rat-stack monorepo theater — only this handoff, wrangler, vite client, and a minimal fence (`tsrs --lint`, lefthook, hook-bypass block).
 
-## License
-
-MIT
+See [SECURITY.md](./SECURITY.md).

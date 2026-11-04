@@ -1,11 +1,8 @@
-const PREFIX = "PODAJ1.";
+export type EnvVar = { key: string; value: string };
 
-export type HandoffPayload = {
-  profile: string;
-  loginUrl: string;
-  username: string;
-  password: string;
-};
+export type HandoffVariables = { vars: EnvVar[] };
+
+const PREFIX = "PODAJ1.";
 
 type Podaj1Envelope = {
   v: 1;
@@ -31,42 +28,16 @@ const owned = (bytes: Uint8Array): Uint8Array<ArrayBuffer> => {
   return copy;
 };
 
-export const pemToSpki = (pem: string): ArrayBuffer => {
-  const body = pem
-    .replace(/-----BEGIN PUBLIC KEY-----/, "")
-    .replace(/-----END PUBLIC KEY-----/, "")
-    .replace(/\s/g, "");
-  return owned(b64dec(body)).buffer;
-};
-
-export const pemToPkcs8 = (pem: string): ArrayBuffer => {
-  const body = pem
-    .replace(/-----BEGIN PRIVATE KEY-----/, "")
-    .replace(/-----END PRIVATE KEY-----/, "")
-    .replace(/\s/g, "");
-  return owned(b64dec(body)).buffer;
-};
-
-export const importPublicKey = (pem: string): Promise<CryptoKey> =>
-  crypto.subtle.importKey(
-    "spki",
-    pemToSpki(pem),
-    { name: "RSA-OAEP", hash: "SHA-256" },
-    false,
-    ["encrypt"],
-  );
-
-export const importPrivateKey = (pem: string): Promise<CryptoKey> =>
-  crypto.subtle.importKey(
-    "pkcs8",
-    pemToPkcs8(pem),
-    { name: "RSA-OAEP", hash: "SHA-256" },
-    false,
-    ["decrypt"],
+const pemBody = (pem: string, label: string): Uint8Array =>
+  b64dec(
+    pem
+      .replace(`-----BEGIN ${label}-----`, "")
+      .replace(`-----END ${label}-----`, "")
+      .replace(/\s/g, ""),
   );
 
 export const publicKeyFingerprint = async (pem: string): Promise<string> => {
-  const spki = pemToSpki(pem);
+  const spki = owned(pemBody(pem, "PUBLIC KEY")).buffer;
   const hash = await crypto.subtle.digest("SHA-256", spki);
   const hex = [...new Uint8Array(hash)]
     .map((b) => b.toString(16).padStart(2, "0"))
@@ -75,10 +46,17 @@ export const publicKeyFingerprint = async (pem: string): Promise<string> => {
 };
 
 export async function seal(
-  payload: HandoffPayload,
+  payload: HandoffVariables,
   publicKeyPem: string,
   env: string,
 ): Promise<string> {
+  const pubKey = await crypto.subtle.importKey(
+    "spki",
+    owned(pemBody(publicKeyPem, "PUBLIC KEY")).buffer,
+    { name: "RSA-OAEP", hash: "SHA-256" },
+    false,
+    ["encrypt"],
+  );
   const plaintext = new TextEncoder().encode(JSON.stringify(payload));
   const aesKey = await crypto.subtle.generateKey(
     { name: "AES-GCM", length: 256 },
@@ -92,7 +70,6 @@ export async function seal(
     plaintext,
   );
   const rawAes = await crypto.subtle.exportKey("raw", aesKey);
-  const pubKey = await importPublicKey(publicKeyPem);
   const ekBuf = await crypto.subtle.encrypt(
     { name: "RSA-OAEP" },
     pubKey,
@@ -111,13 +88,19 @@ export async function seal(
 export async function open(
   sealed: string,
   privateKeyPem: string,
-): Promise<{ env: string; payload: HandoffPayload }> {
+): Promise<{ env: string; payload: HandoffVariables }> {
   if (!sealed.startsWith(PREFIX)) {
     throw new Error("expected PODAJ1 ciphertext");
   }
   const envelope = JSON.parse(atob(sealed.slice(PREFIX.length))) as Podaj1Envelope;
   if (envelope.v !== 1) throw new Error("unsupported podaj version");
-  const priv = await importPrivateKey(privateKeyPem);
+  const priv = await crypto.subtle.importKey(
+    "pkcs8",
+    owned(pemBody(privateKeyPem, "PRIVATE KEY")).buffer,
+    { name: "RSA-OAEP", hash: "SHA-256" },
+    false,
+    ["decrypt"],
+  );
   const rawAes = await crypto.subtle.decrypt(
     { name: "RSA-OAEP" },
     priv,
@@ -130,15 +113,13 @@ export async function open(
     false,
     ["decrypt"],
   );
-  const iv = owned(b64dec(envelope.iv));
-  const ct = owned(b64dec(envelope.ciphertext));
   const plainBuf = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv },
+    { name: "AES-GCM", iv: owned(b64dec(envelope.iv)) },
     aesKey,
-    ct,
+    owned(b64dec(envelope.ciphertext)),
   );
-  const payload = JSON.parse(new TextDecoder().decode(plainBuf)) as HandoffPayload;
+  const payload = JSON.parse(
+    new TextDecoder().decode(plainBuf),
+  ) as HandoffVariables;
   return { env: envelope.env, payload };
 }
-
-export const isPodaj1 = (s: string): boolean => s.startsWith(PREFIX);

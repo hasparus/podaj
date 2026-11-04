@@ -7,3 +7,6 @@ private.pem
 .env
 .env.*
 public/environments.json
+.agents/
+skills-lock.json
+.turbo

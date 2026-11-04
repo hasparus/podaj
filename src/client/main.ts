@@ -2,8 +2,9 @@ import {
   open,
   publicKeyFingerprint,
   seal,
-  type HandoffPayload,
-} from "../crypto/podaj1";
+  type EnvVar,
+  type HandoffVariables,
+} from "../crypto/podaj1.js";
 
 type Environment = {
   slug: string;
@@ -12,22 +13,26 @@ type Environment = {
   publicKeyPem: string;
 };
 
+type Draft = EnvVar & { id: string; revealed: boolean };
+
 const mount = (parent: Node, ...children: Node[]) => {
   for (const child of children) parent.appendChild(child);
 };
 
-const dom = (tag: string, props?: Record<string, string>): HTMLElement => {
+const el = <K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  className?: string,
+): HTMLElementTagNameMap[K] => {
   const node = document.createElement(tag);
-  if (props) {
-    for (const [k, v] of Object.entries(props)) {
-      if (k === "className") node.className = v;
-      else node.setAttribute(k, v);
-    }
-  }
+  if (className) node.className = className;
   return node;
 };
 
-const setStatus = (node: HTMLElement, text: string, kind: "ok" | "error" | "") => {
+const setStatus = (
+  node: HTMLElement,
+  text: string,
+  kind: "ok" | "error" | "",
+) => {
   node.textContent = text;
   node.classList.remove("ok", "error", "hidden");
   if (kind) node.classList.add(kind);
@@ -40,74 +45,57 @@ const loadEnvironments = async (): Promise<Environment[]> => {
   return (await res.json()) as Environment[];
 };
 
-const handoffRoute = (): string | null => {
-  const m = location.pathname.match(/^\/h\/([a-f0-9]{32})$/);
-  return m ? m[1] : null;
+const handoffId = (): string | null => {
+  const m = location.pathname.match(/^\/h\/([a-f0-9]{32})$/u);
+  return m?.[1] ?? null;
 };
 
-const readFileText = (file: File): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result));
-    r.onerror = () => reject(r.error);
-    r.readAsText(file);
-  });
+const readFileText = (file: File): Promise<string> => file.text();
+
+const toPayload = (drafts: Draft[]): HandoffVariables => ({
+  vars: drafts
+    .filter((d) => d.key.trim().length > 0 && d.value.length > 0)
+    .map((d) => ({ key: d.key.trim(), value: d.value })),
+});
 
 async function renderReceive(root: HTMLElement, id: string): Promise<void> {
   root.replaceChildren();
-  const main = dom("div", { className: "main" });
-  const h2 = dom("h2");
-  h2.textContent = "one-shot handoff";
-  const lead = dom("p", { className: "lead" });
+  const main = el("div", "main");
+  const h1 = el("h1");
+  h1.textContent = "Environment variables";
+  const lead = el("p", "lead");
   lead.textContent =
-    "fetching ciphertext from kv. decrypt locally with your private key — it never leaves this browser.";
-  const status = dom("div", { className: "status hidden" });
-  const fileRow = dom("div", { className: "file-row hidden" });
-  const fileLabel = dom("label");
-  fileLabel.textContent = "private key (~/.local/share/podaj/private.pem)";
-  const fileInput = dom("input") as HTMLInputElement;
+    "One-shot ciphertext from KV. Decrypt locally with your private key — it never leaves this browser.";
+  const status = el("div", "status hidden");
+  const fileRow = el("div", "file-row hidden");
+  const fileInput = el("input") as HTMLInputElement;
   fileInput.type = "file";
   fileInput.accept = ".pem";
-  mount(fileRow, fileLabel, fileInput);
-
-  const fields = dom("div", { className: "hidden" });
-  const mkField = (name: string, label: string, secret = false) => {
-    const wrap = dom("div", { className: "field" });
-    const lab = dom("label");
-    lab.textContent = label;
-    const input = dom("input") as HTMLInputElement;
-    input.name = name;
-    input.readOnly = true;
-    if (secret) input.type = "password";
-    mount(wrap, lab, input);
-    return { wrap, input };
-  };
-  const profile = mkField("profile", "auth profile name");
-  const loginUrl = mkField("loginUrl", "login url");
-  const username = mkField("username", "username");
-  const password = mkField("password", "password", true);
-  mount(fields, profile.wrap, loginUrl.wrap, username.wrap, password.wrap);
-
-  mount(main, h2, lead, status, fileRow, fields);
+  fileRow.appendChild(
+    document.createTextNode("private key (~/.local/share/podaj/private.pem) "),
+  );
+  fileRow.appendChild(fileInput);
+  const list = el("div", "reveal-list hidden");
+  mount(main, h1, lead, status, fileRow, list);
   root.appendChild(main);
 
   let sealed: string;
   try {
     const res = await fetch(`/api/handoffs/${id}`);
     if (res.status === 410) {
-      setStatus(status, "already consumed or expired.", "error");
+      setStatus(status, "Already consumed or expired.", "error");
       return;
     }
     if (!res.ok) {
-      setStatus(status, `fetch failed (${res.status})`, "error");
+      setStatus(status, `Fetch failed (${res.status}).`, "error");
       return;
     }
     const data = (await res.json()) as { sealed: string };
     sealed = data.sealed;
-    setStatus(status, "ciphertext retrieved (one use). choose private key to decrypt.", "ok");
+    setStatus(status, "Ciphertext retrieved (one use). Choose private key to decrypt.", "ok");
     fileRow.classList.remove("hidden");
   } catch (e) {
-    setStatus(status, e instanceof Error ? e.message : "fetch failed", "error");
+    setStatus(status, e instanceof Error ? e.message : "Fetch failed", "error");
     return;
   }
 
@@ -117,18 +105,24 @@ async function renderReceive(root: HTMLElement, id: string): Promise<void> {
     try {
       const pem = await readFileText(file);
       const { env, payload } = await open(sealed, pem);
-      profile.input.value = payload.profile;
-      loginUrl.input.value = payload.loginUrl;
-      username.input.value = payload.username;
-      password.input.value = payload.password;
-      fields.classList.remove("hidden");
+      list.replaceChildren();
+      for (const v of payload.vars) {
+        const row = el("div", "reveal-row");
+        const k = el("span");
+        k.textContent = v.key;
+        const val = el("span");
+        val.textContent = v.value;
+        mount(row, k, val);
+        list.appendChild(row);
+      }
+      list.classList.remove("hidden");
       setStatus(
         status,
-        `decrypted for environment “${env}”. copy what you need — this page cannot fetch again.`,
+        `Decrypted for “${env}”. Copy what you need — this link cannot be fetched again.`,
         "ok",
       );
     } catch (e) {
-      setStatus(status, e instanceof Error ? e.message : "decrypt failed", "error");
+      setStatus(status, e instanceof Error ? e.message : "Decrypt failed", "error");
     }
   });
 }
@@ -138,66 +132,95 @@ async function renderSend(root: HTMLElement): Promise<void> {
   if (envs.length === 0) throw new Error("no environments configured");
 
   let selected = envs[0]!.slug;
+  let drafts: Draft[] = [
+    { id: crypto.randomUUID(), key: "", value: "", revealed: false },
+  ];
 
   root.replaceChildren();
-  const layout = dom("div", { className: "layout" });
-  const sidebar = dom("aside", { className: "sidebar" });
-  const h1 = dom("h1");
-  h1.textContent = "Environments";
-  const list = dom("ul", { className: "env-list" });
-  mount(sidebar, h1, list);
+  const layout = el("div", "layout");
+  const sidebar = el("aside", "sidebar");
+  const envTitle = el("h2");
+  envTitle.textContent = "Environments";
+  const envList = el("ul", "env-list");
+  mount(sidebar, envTitle, envList);
 
-  const main = dom("div", { className: "main" });
-  const title = dom("h2");
-  const lead = dom("p", { className: "lead" });
-  const meta = dom("p", { className: "meta" });
-  const form = dom("form");
-  const status = dom("div", { className: "status hidden" });
+  const main = el("div", "main");
+  const h1 = el("h1");
+  const lead = el("p", "lead");
+  const meta = el("p", "meta");
+  const toolbar = el("div", "toolbar");
+  const addBtn = el("button", "btn");
+  addBtn.textContent = "Add variable";
+  const sendBtn = el("button", "btn btn-primary");
+  sendBtn.textContent = "Encrypt & send";
+  mount(toolbar, addBtn, sendBtn);
 
-  const mkInput = (
-    name: keyof HandoffPayload,
-    label: string,
-    secret = false,
-  ): { wrap: HTMLElement; input: HTMLInputElement } => {
-    const wrap = dom("div", { className: "field" });
-    const lab = dom("label");
-    lab.textContent = label;
-    const input = dom("input") as HTMLInputElement;
-    input.name = name;
-    input.required = true;
-    input.autocomplete = "off";
-    if (secret) input.type = "password";
-    mount(wrap, lab, input);
-    return { wrap, input };
-  };
+  const table = el("div", "var-table");
+  const head = el("div", "var-head");
+  const hk = el("span");
+  hk.textContent = "Key";
+  const hv = el("span");
+  hv.textContent = "Value";
+  const ha = el("span");
+  ha.textContent = "";
+  mount(head, hk, hv, ha);
+  const body = el("div");
+  mount(table, head, body);
 
-  const profile = mkInput("profile", "auth profile name");
-  const login = mkInput("loginUrl", "login url");
-  const user = mkInput("username", "username");
-  const pass = mkInput("password", "password", true);
-
-  const actions = dom("div", { className: "actions" });
-  const submit = dom("button", { type: "submit" }) as HTMLButtonElement;
-  submit.textContent = "encrypt & send";
-  actions.appendChild(submit);
-
-  const foot = dom("div", { className: "footnote" });
-  foot.textContent =
-    "aes-256-gcm + rsa-oaep-256. private key never leaves the recipient machine. do not share the handoff url in public channels.";
-
-  mount(form, profile.wrap, login.wrap, user.wrap, pass.wrap, actions);
-  mount(main, title, lead, meta, form, status, foot);
+  const status = el("div", "status hidden");
+  mount(main, h1, lead, meta, toolbar, table, status);
   mount(layout, sidebar, main);
   root.appendChild(layout);
 
+  const renderRows = () => {
+    body.replaceChildren();
+    for (const d of drafts) {
+      const row = el("div", "var-row");
+      const keyInput = el("input") as HTMLInputElement;
+      keyInput.placeholder = "OPENAI_API_KEY";
+      keyInput.value = d.key;
+      keyInput.autocomplete = "off";
+      keyInput.addEventListener("input", () => {
+        d.key = keyInput.value;
+      });
+      const valInput = el("input") as HTMLInputElement;
+      valInput.placeholder = "secret value";
+      valInput.type = d.revealed ? "text" : "password";
+      valInput.value = d.value;
+      valInput.autocomplete = "off";
+      valInput.addEventListener("input", () => {
+        d.value = valInput.value;
+      });
+      const remove = el("button", "icon-btn");
+      remove.textContent = "Remove";
+      remove.type = "button";
+      remove.disabled = drafts.length <= 1;
+      remove.addEventListener("click", () => {
+        if (drafts.length <= 1) return;
+        drafts = drafts.filter((x) => x.id !== d.id);
+        renderRows();
+      });
+      const reveal = el("button", "icon-btn");
+      reveal.textContent = d.revealed ? "Hide" : "Show";
+      reveal.type = "button";
+      reveal.addEventListener("click", () => {
+        d.revealed = !d.revealed;
+        renderRows();
+      });
+      const actions = el("div");
+      mount(actions, reveal, remove);
+      mount(row, keyInput, valInput, actions);
+      body.appendChild(row);
+    }
+  };
+
   const syncEnv = async (env: Environment) => {
     selected = env.slug;
-    title.textContent = `handoff → ${env.name}`;
+    h1.textContent = "Environment variables";
     lead.textContent =
-      "encrypts in your browser with this environment's public key, then stores only PODAJ1 ciphertext in a one-shot kv slot.";
-    const fp = await publicKeyFingerprint(env.publicKeyPem);
-    meta.textContent = `public key sha-256 prefix: ${fp}`;
-    for (const btn of list.querySelectorAll("button")) {
+      "Store API keys and config for your remote agent. Encrypts in your browser with this environment's public key, then writes only PODAJ1 ciphertext to a one-shot KV slot.";
+    meta.textContent = `Target: ${env.name} · public key sha-256 prefix: ${await publicKeyFingerprint(env.publicKeyPem)}`;
+    for (const btn of envList.querySelectorAll("button")) {
       btn.setAttribute(
         "aria-current",
         btn.dataset.slug === env.slug ? "true" : "false",
@@ -206,31 +229,37 @@ async function renderSend(root: HTMLElement): Promise<void> {
   };
 
   for (const env of envs) {
-    const btn = dom("button", { type: "button" });
+    const btn = el("button");
+    btn.type = "button";
     btn.textContent = env.name;
     btn.dataset.slug = env.slug;
     btn.addEventListener("click", () => void syncEnv(env));
-    list.appendChild(btn);
+    envList.appendChild(btn);
   }
 
-  await syncEnv(envs[0]!);
+  addBtn.addEventListener("click", () => {
+    drafts = [
+      ...drafts,
+      { id: crypto.randomUUID(), key: "", value: "", revealed: false },
+    ];
+    renderRows();
+  });
 
-  form.addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    submit.disabled = true;
+  sendBtn.addEventListener("click", async () => {
+    sendBtn.disabled = true;
     setStatus(status, "", "");
     const env = envs.find((e) => e.slug === selected);
     if (!env) {
-      setStatus(status, "unknown environment", "error");
-      submit.disabled = false;
+      setStatus(status, "Unknown environment.", "error");
+      sendBtn.disabled = false;
       return;
     }
-    const payload: HandoffPayload = {
-      profile: profile.input.value.trim(),
-      loginUrl: login.input.value.trim(),
-      username: user.input.value.trim(),
-      password: pass.input.value,
-    };
+    const payload = toPayload(drafts);
+    if (payload.vars.length === 0) {
+      setStatus(status, "Add at least one key and value.", "error");
+      sendBtn.disabled = false;
+      return;
+    }
     try {
       const sealed = await seal(payload, env.publicKeyPem, env.slug);
       const res = await fetch("/api/handoffs", {
@@ -243,30 +272,32 @@ async function renderSend(root: HTMLElement): Promise<void> {
         throw new Error(err.error ?? `store failed (${res.status})`);
       }
       const data = (await res.json()) as { url: string };
-      setStatus(status, `stored. one-time link:\n${data.url}`, "ok");
-      pass.input.value = "";
+      setStatus(status, `One-time link:\n${data.url}`, "ok");
+      drafts = drafts.map((d) => ({ ...d, value: "" }));
+      renderRows();
     } catch (e) {
-      setStatus(status, e instanceof Error ? e.message : "failed", "error");
+      setStatus(status, e instanceof Error ? e.message : "Failed", "error");
     } finally {
-      submit.disabled = false;
+      sendBtn.disabled = false;
     }
   });
+
+  renderRows();
+  await syncEnv(envs[0]!);
 }
 
 const boot = async (): Promise<void> => {
   const root = document.getElementById("app");
   if (!root) throw new Error("#app missing");
-  const id = handoffRoute();
+  const id = handoffId();
   if (id) await renderReceive(root, id);
   else await renderSend(root);
 };
 
 boot().catch((e) => {
   const root = document.getElementById("app");
-  if (root) {
-    const p = document.createElement("p");
-    p.className = "status error";
-    p.textContent = e instanceof Error ? e.message : "startup failed";
-    root.appendChild(p);
-  }
+  if (!root) return;
+  const p = el("p", "status error");
+  p.textContent = e instanceof Error ? e.message : "Startup failed";
+  root.appendChild(p);
 });
