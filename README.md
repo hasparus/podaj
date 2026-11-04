@@ -1,5 +1,7 @@
 # podaj
 
+Pronounced /ˈpɔdaj/.
+
 Share environment variables once via a link. You add keys and values in the browser; the recipient opens the link with their key file and copies what they need.
 
 Deploy it to **your** Cloudflare account. There is no shared podaj. The old upstream URL is closed.
