@@ -2,16 +2,11 @@
 
 Minimal one-shot env-var handoff (Worker + Vite UI). Do not grow MCP, capability layers, or Alchemy unless the owner asks.
 
-## UI (frozen)
+## UI (Direction A · Zinc Ledger)
 
-Do **not** invent or ship a new visual direction until the owner picks one letter from the Impeccable 4-up:
-
-- **A** Zinc Ledger
-- **B** Paper Seal
-- **C** Void Console
-- **D** Split Envelope
-
-Until then: keep the current functional UI (structure/behavior only). Fence, tsrs, worker, crypto, and scripts may still change; avoid CSS/layout/visual polish passes.
+- Single default public key from `environments.json` (first entry); show sha-256 fingerprint in header — **no environments sidebar**
+- Vercel-adjacent **Key | Value** table, **Add row**, **Encrypt & send**; minimal chrome
+- Env-var handoff only (not vault fields)
 
 ## Gate
 

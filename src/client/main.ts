@@ -39,10 +39,15 @@ const setStatus = (
   if (!text) node.classList.add("hidden");
 };
 
-const loadEnvironments = async (): Promise<Environment[]> => {
+const loadDefaultEnvironment = async (): Promise<Environment> => {
   const res = await fetch("/environments.json");
   if (!res.ok) throw new Error("could not load environments.json");
-  return (await res.json()) as Environment[];
+  const envs = (await res.json()) as Environment[];
+  const env = envs[0];
+  if (!env?.publicKeyPem) {
+    throw new Error("environments.json needs a default public key");
+  }
+  return env;
 };
 
 const handoffId = (): string | null => {
@@ -58,26 +63,46 @@ const toPayload = (drafts: Draft[]): HandoffVariables => ({
     .map((d) => ({ key: d.key.trim(), value: d.value })),
 });
 
+const shellHeader = (fingerprint: string): HTMLElement => {
+  const header = el("header", "site-header");
+  const brand = el("span", "brand");
+  brand.textContent = "podaj";
+  const meta = el("span", "key-meta");
+  meta.textContent = fingerprint;
+  mount(header, brand, meta);
+  return header;
+};
+
 async function renderReceive(root: HTMLElement, id: string): Promise<void> {
   root.replaceChildren();
-  const main = el("div", "main");
-  const h1 = el("h1");
-  h1.textContent = "Environment variables";
-  const lead = el("p", "lead");
-  lead.textContent =
-    "One-shot ciphertext from KV. Decrypt locally with your private key — it never leaves this browser.";
+  const shell = el("div", "shell");
+  const header = shellHeader("One-shot decrypt");
+  const main = el("main", "main");
   const status = el("div", "status hidden");
   const fileRow = el("div", "file-row hidden");
   const fileInput = el("input") as HTMLInputElement;
   fileInput.type = "file";
   fileInput.accept = ".pem";
   fileRow.appendChild(
-    document.createTextNode("private key (~/.local/share/podaj/private.pem) "),
+    document.createTextNode("Private key (~/.local/share/podaj/private.pem) "),
   );
   fileRow.appendChild(fileInput);
-  const list = el("div", "reveal-list hidden");
-  mount(main, h1, lead, status, fileRow, list);
-  root.appendChild(main);
+
+  const table = el("div", "var-table hidden");
+  const head = el("div", "var-head");
+  const hk = el("span");
+  hk.textContent = "Key";
+  const hv = el("span");
+  hv.textContent = "Value";
+  const ha = el("span");
+  ha.textContent = "";
+  mount(head, hk, hv, ha);
+  const body = el("div");
+  mount(table, head, body);
+
+  mount(main, status, fileRow, table);
+  mount(shell, header, main);
+  root.appendChild(shell);
 
   let sealed: string;
   try {
@@ -92,7 +117,11 @@ async function renderReceive(root: HTMLElement, id: string): Promise<void> {
     }
     const data = (await res.json()) as { sealed: string };
     sealed = data.sealed;
-    setStatus(status, "Ciphertext retrieved (one use). Choose private key to decrypt.", "ok");
+    setStatus(
+      status,
+      "Ciphertext loaded (single use). Pick your private key to decrypt.",
+      "ok",
+    );
     fileRow.classList.remove("hidden");
   } catch (e) {
     setStatus(status, e instanceof Error ? e.message : "Fetch failed", "error");
@@ -104,21 +133,21 @@ async function renderReceive(root: HTMLElement, id: string): Promise<void> {
     if (!file) return;
     try {
       const pem = await readFileText(file);
-      const { env, payload } = await open(sealed, pem);
-      list.replaceChildren();
+      const { payload } = await open(sealed, pem);
+      body.replaceChildren();
       for (const v of payload.vars) {
-        const row = el("div", "reveal-row");
-        const k = el("span");
+        const row = el("div", "var-row var-row-readonly");
+        const k = el("code", "cell-key");
         k.textContent = v.key;
-        const val = el("span");
+        const val = el("code", "cell-value");
         val.textContent = v.value;
-        mount(row, k, val);
-        list.appendChild(row);
+        mount(row, k, val, el("span"));
+        body.appendChild(row);
       }
-      list.classList.remove("hidden");
+      table.classList.remove("hidden");
       setStatus(
         status,
-        `Decrypted for “${env}”. Copy what you need — this link cannot be fetched again.`,
+        "Decrypted locally. Copy what you need — this link cannot be fetched again.",
         "ok",
       );
     } catch (e) {
@@ -128,29 +157,21 @@ async function renderReceive(root: HTMLElement, id: string): Promise<void> {
 }
 
 async function renderSend(root: HTMLElement): Promise<void> {
-  const envs = await loadEnvironments();
-  if (envs.length === 0) throw new Error("no environments configured");
+  const env = await loadDefaultEnvironment();
+  const fingerprint = await publicKeyFingerprint(env.publicKeyPem);
 
-  let selected = envs[0]!.slug;
   let drafts: Draft[] = [
     { id: crypto.randomUUID(), key: "", value: "", revealed: false },
   ];
 
   root.replaceChildren();
-  const layout = el("div", "layout");
-  const sidebar = el("aside", "sidebar");
-  const envTitle = el("h2");
-  envTitle.textContent = "Environments";
-  const envList = el("ul", "env-list");
-  mount(sidebar, envTitle, envList);
+  const shell = el("div", "shell");
+  const header = shellHeader(`sha256 ${fingerprint}`);
+  const main = el("main", "main");
 
-  const main = el("div", "main");
-  const h1 = el("h1");
-  const lead = el("p", "lead");
-  const meta = el("p", "meta");
   const toolbar = el("div", "toolbar");
   const addBtn = el("button", "btn");
-  addBtn.textContent = "Add variable";
+  addBtn.textContent = "Add row";
   const sendBtn = el("button", "btn btn-primary");
   sendBtn.textContent = "Encrypt & send";
   mount(toolbar, addBtn, sendBtn);
@@ -168,18 +189,20 @@ async function renderSend(root: HTMLElement): Promise<void> {
   mount(table, head, body);
 
   const status = el("div", "status hidden");
-  mount(main, h1, lead, meta, toolbar, table, status);
-  mount(layout, sidebar, main);
-  root.appendChild(layout);
+  mount(main, table, toolbar, status);
+  mount(shell, header, main);
+  root.appendChild(shell);
 
   const renderRows = () => {
     body.replaceChildren();
     for (const d of drafts) {
       const row = el("div", "var-row");
       const keyInput = el("input") as HTMLInputElement;
+      keyInput.className = "cell-key";
       keyInput.placeholder = "OPENAI_API_KEY";
       keyInput.value = d.key;
       keyInput.autocomplete = "off";
+      keyInput.spellcheck = false;
       keyInput.addEventListener("input", () => {
         d.key = keyInput.value;
       });
@@ -207,35 +230,12 @@ async function renderSend(root: HTMLElement): Promise<void> {
         d.revealed = !d.revealed;
         renderRows();
       });
-      const actions = el("div");
+      const actions = el("div", "row-actions");
       mount(actions, reveal, remove);
       mount(row, keyInput, valInput, actions);
       body.appendChild(row);
     }
   };
-
-  const syncEnv = async (env: Environment) => {
-    selected = env.slug;
-    h1.textContent = "Environment variables";
-    lead.textContent =
-      "Store API keys and config for your remote agent. Encrypts in your browser with this environment's public key, then writes only PODAJ1 ciphertext to a one-shot KV slot.";
-    meta.textContent = `Target: ${env.name} · public key sha-256 prefix: ${await publicKeyFingerprint(env.publicKeyPem)}`;
-    for (const btn of envList.querySelectorAll("button")) {
-      btn.setAttribute(
-        "aria-current",
-        btn.dataset.slug === env.slug ? "true" : "false",
-      );
-    }
-  };
-
-  for (const env of envs) {
-    const btn = el("button");
-    btn.type = "button";
-    btn.textContent = env.name;
-    btn.dataset.slug = env.slug;
-    btn.addEventListener("click", () => void syncEnv(env));
-    envList.appendChild(btn);
-  }
 
   addBtn.addEventListener("click", () => {
     drafts = [
@@ -248,12 +248,6 @@ async function renderSend(root: HTMLElement): Promise<void> {
   sendBtn.addEventListener("click", async () => {
     sendBtn.disabled = true;
     setStatus(status, "", "");
-    const env = envs.find((e) => e.slug === selected);
-    if (!env) {
-      setStatus(status, "Unknown environment.", "error");
-      sendBtn.disabled = false;
-      return;
-    }
     const payload = toPayload(drafts);
     if (payload.vars.length === 0) {
       setStatus(status, "Add at least one key and value.", "error");
@@ -283,7 +277,6 @@ async function renderSend(root: HTMLElement): Promise<void> {
   });
 
   renderRows();
-  await syncEnv(envs[0]!);
 }
 
 const boot = async (): Promise<void> => {

@@ -37,8 +37,8 @@ KV binding `HANDOFFS` uses namespace `podaj-handoffs` (`87bb68bfae9148e2ae1a5d67
 
 ## Usage
 
-1. Pick an **Environment** in the sidebar (one or many in `environments.json`).
-2. Add KEY + value rows → **Encrypt & send**.
+1. Configure the default public key in `public/environments.json` (first entry; fingerprint shown in the header).
+2. Add **Key | Value** rows → **Encrypt & send**.
 3. Share the one-time `/h/{id}` link.
 4. Recipient opens the link, selects `private.pem`, sees decrypted vars (or `pnpm decrypt` on the PODAJ1 blob).
 
