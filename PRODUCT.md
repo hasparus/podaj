@@ -10,7 +10,7 @@ Share environment variables once via a link. Senders fill a Key | Value table in
 
 ## Non-goals
 
-Password vault, multi-environment picker, MCP server, a shared public instance. Each operator deploys their own Worker (README button, or `podaj init`). Agents use `podaj init --url … --token …` and `podaj wait`.
+Password vault, multi-environment picker, MCP server, a shared public instance. Each operator deploys their own Worker (README button, or `podaj init`). Agents use `podaj init --url …` with `PODAJ_TOKEN` on stdin, and `podaj wait`.
 
 ## Security story (user-facing)
 

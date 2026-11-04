@@ -28,10 +28,12 @@ From a checkout, `bun run podaj init` is the same command.
 Agents skip the prompts:
 
 ```bash
-podaj init --url https://<name>.workers.dev --token "$PODAJ_TOKEN"
+printf '%s\n' "$PODAJ_TOKEN" | podaj init --url https://<name>.workers.dev
 podaj init --deploy
-podaj wait OPENAI_API_KEY
+podaj wait IMPORTANT_SECRET_KEY
 ```
+
+The piped value stays out of shell history. `podaj wait` reads a piped token the same way, then `PODAJ_TOKEN`, then the config file.
 
 `--deploy` requires an existing `wrangler login`. The first run creates a KV namespace and stores its id in the config. Later deploys reuse that id.
 
@@ -66,7 +68,7 @@ bun run deploy     # vite build + wrangler deploy
 
 ```bash
 podaj init
-podaj wait OPENAI_API_KEY ANTHROPIC_API_KEY
+podaj wait IMPORTANT_SECRET_KEY
 podaj decrypt                 # PODAJ1 blob on stdin
 ```
 

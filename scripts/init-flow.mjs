@@ -165,7 +165,7 @@ export const runInit = async (args, io) => {
   }
   if (!io.isTTY) {
     throw new Error(
-      "podaj init needs a terminal, or pass --url and --token, or --deploy",
+      "podaj init needs a terminal, or pass --url with the token on stdin, or --deploy",
     );
   }
   const mode = await io.chooseMode();

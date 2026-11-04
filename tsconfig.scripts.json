@@ -23,6 +23,7 @@
     "scripts/open-podaj1.mjs",
     "scripts/podaj.mjs",
     "scripts/select-vars.mjs",
+    "scripts/stdin-token.mjs",
     "scripts/stage-worker.mjs"
   ]
 }

@@ -7,6 +7,7 @@ import { initArgs } from "../scripts/init-args.mjs";
 import { runInit, type InitIo, type SavedInit } from "../scripts/init-flow.mjs";
 import { originOf, tokenVerdict } from "../scripts/instance.mjs";
 import { stageWorker } from "../scripts/stage-worker.mjs";
+import { tokenFromText } from "../scripts/stdin-token.mjs";
 
 const fake = (over: Partial<InitIo> = {}) => {
   let saved: SavedInit | undefined;
@@ -48,19 +49,36 @@ describe("init args", () => {
     ).toEqual({
       deploy: false,
       token: "abc",
+      tokenStdin: false,
       url: "https://podaj.example.workers.dev",
     });
-    expect(initArgs(["--deploy"])).toEqual({ deploy: true });
+    expect(initArgs(["--url", "https://podaj.example.workers.dev"])).toEqual({
+      deploy: false,
+      tokenStdin: false,
+      url: "https://podaj.example.workers.dev",
+    });
+    expect(initArgs(["--url", "https://podaj.example.workers.dev", "--token", "-"])).toEqual({
+      deploy: false,
+      tokenStdin: true,
+      url: "https://podaj.example.workers.dev",
+    });
+    expect(initArgs(["--deploy"])).toEqual({ deploy: true, tokenStdin: false });
   });
 
-  it("rejects a half pair and unknown flags", () => {
-    expect(() => initArgs(["--url", "https://podaj.example.workers.dev"])).toThrow(
-      /both/u,
-    );
+  it("rejects a token without a url and unknown flags", () => {
+    expect(() => initArgs(["--token", "abc"])).toThrow(/url/u);
     expect(() => initArgs(["--weird"])).toThrow(/unknown/u);
     expect(() =>
       initArgs(["--deploy", "--url", "https://x", "--token", "t"]),
     ).toThrow(/either/u);
+  });
+});
+
+describe("stdin token", () => {
+  it("reads one trimmed line and ignores an empty pipe", () => {
+    expect(tokenFromText("  secret\n")).toBe("secret");
+    expect(tokenFromText("\n")).toBeUndefined();
+    expect(() => tokenFromText("one\ntwo\n")).toThrow(/single line/u);
   });
 });
 
@@ -81,7 +99,7 @@ describe("runInit", () => {
   it("connects without prompting when url and token are passed", async () => {
     const harness = fake();
     await runInit(
-      { deploy: false, token: "abc", url: "podaj.example.workers.dev" },
+      { deploy: false, token: "abc", tokenStdin: false, url: "podaj.example.workers.dev" },
       harness.value,
     );
     expect(harness.saved()).toEqual({
@@ -96,7 +114,7 @@ describe("runInit", () => {
     const harness = fake({ probe: async () => "unauthorized" });
     await expect(
       runInit(
-        { deploy: false, token: "nope", url: "https://podaj.example.workers.dev" },
+        { deploy: false, token: "nope", tokenStdin: false, url: "https://podaj.example.workers.dev" },
         harness.value,
       ),
     ).rejects.toThrow(/rejected/u);
@@ -105,7 +123,7 @@ describe("runInit", () => {
 
   it("refuses a non-interactive deploy when Cloudflare is logged out", async () => {
     const harness = fake({ whoami: () => false });
-    await expect(runInit({ deploy: true }, harness.value)).rejects.toThrow(
+    await expect(runInit({ deploy: true, tokenStdin: false }, harness.value)).rejects.toThrow(
       /logged in/u,
     );
   });
@@ -123,7 +141,7 @@ describe("runInit", () => {
         return "/stage/wrangler.json";
       },
     });
-    await runInit({ deploy: true }, harness.value);
+    await runInit({ deploy: true, tokenStdin: false }, harness.value);
     expect(staged).toBe("abcdef0123456789abcdef0123456789:PUBLIC");
     expect(notes).toContain(
       "reusing KV namespace abcdef0123456789abcdef0123456789",
@@ -146,7 +164,7 @@ describe("runInit", () => {
       },
       whoami: () => loggedIn,
     });
-    await runInit({ deploy: false }, harness.value);
+    await runInit({ deploy: false, tokenStdin: false }, harness.value);
     expect(loggedIn).toBe(true);
     expect(harness.saved()?.mode).toBe("deploy");
   });

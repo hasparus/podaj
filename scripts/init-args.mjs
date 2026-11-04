@@ -1,5 +1,5 @@
 /**
- * @typedef {{ deploy: boolean, url?: string, token?: string }} InitArgs
+ * @typedef {{ deploy: boolean, url?: string, token?: string, tokenStdin: boolean }} InitArgs
  */
 
 /**
@@ -8,7 +8,7 @@
  */
 export const initArgs = (argv) => {
   /** @type {InitArgs} */
-  const args = { deploy: false };
+  const args = { deploy: false, tokenStdin: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--deploy") {
@@ -22,6 +22,8 @@ export const initArgs = (argv) => {
       }
       if (arg === "--url") {
         args.url = value;
+      } else if (value === "-") {
+        args.tokenStdin = true;
       } else {
         args.token = value;
       }
@@ -31,12 +33,15 @@ export const initArgs = (argv) => {
     throw new Error(`unknown init flag: ${arg ?? ""}`);
   }
   const hasUrl = args.url !== undefined;
-  const hasToken = args.token !== undefined;
-  if (hasUrl !== hasToken) {
-    throw new Error("pass both --url and --token");
+  const hasToken = args.token !== undefined || args.tokenStdin;
+  if (!hasUrl && hasToken) {
+    throw new Error("pass --url with the token");
   }
-  if (args.deploy && hasUrl) {
-    throw new Error("pass either --deploy or --url and --token");
+  if (args.token !== undefined && args.tokenStdin) {
+    throw new Error("pass the token once");
+  }
+  if (args.deploy && (hasUrl || hasToken)) {
+    throw new Error("pass either --deploy or --url with the token on stdin");
   }
   return args;
 };

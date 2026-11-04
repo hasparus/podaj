@@ -30,6 +30,7 @@ import { keyDir } from "./keygen.mjs";
 import { generateKeypair, joinPrivate, joinPublic } from "./keypair.mjs";
 import { openPodaj1 } from "./open-podaj1.mjs";
 import { selectVars } from "./select-vars.mjs";
+import { readStdinToken } from "./stdin-token.mjs";
 import { clientBuilt, stageWorker, workerStageDir } from "./stage-worker.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -39,7 +40,7 @@ const KEY_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const usage = () => {
   console.error(`usage:
   podaj init
-  podaj init --url https://<name>.workers.dev --token <token>
+  podaj init --url https://<name>.workers.dev   # PODAJ_TOKEN on stdin
   podaj init --deploy
   podaj wait [KEY ...]
   podaj keygen
@@ -93,7 +94,7 @@ const tool = (name) => join(repoRoot, "node_modules", ".bin", name);
 const runtimeConfig = () => {
   const file = readConfig(defaultConfigPath());
   const url = (process.env.PODAJ_URL ?? file?.url ?? "").replace(/\/$/u, "");
-  const token = process.env.PODAJ_TOKEN ?? file?.token ?? "";
+  const token = readStdinToken() ?? process.env.PODAJ_TOKEN ?? file?.token ?? "";
   if (url.length === 0) {
     throw new Error("no podaj url — run podaj init");
   }
@@ -268,10 +269,24 @@ const publishPublicKey = (dir) => {
 };
 
 /**
+ * @param {import("./init-args.mjs").InitArgs} args
+ */
+const tokenOnStdin = (args) => {
+  if (!args.tokenStdin && (args.url === undefined || args.token !== undefined)) {
+    return args;
+  }
+  const token = readStdinToken(args.tokenStdin);
+  if (token === undefined) {
+    throw new Error("pass PODAJ_TOKEN on stdin");
+  }
+  return { ...args, token, tokenStdin: false };
+};
+
+/**
  * @param {string[]} argv
  */
 const init = async (argv) => {
-  const args = initArgs(argv);
+  const args = tokenOnStdin(initArgs(argv));
   const tty = process.stdin.isTTY === true && process.stdout.isTTY === true;
   const interactive = tty && !args.deploy && args.url === undefined;
   if (interactive) {
