@@ -10,4 +10,4 @@ User-facing features of the podaj SPA, each driven through `scripts/journey.sh` 
 
 `receive-handoff` and `one-shot-gone` consume the URL that `create-link` wrote to `$EVIDENCE/handoff-url.txt`. Run them in that order, or run `all`.
 
-Not mapped yet: the CLI (`bun run podaj init`; `bun run podaj wait KEY`; `bun run podaj decrypt` with `PODAJ_KEY_DIR=<dir>` reading a `PODAJ1.` blob on stdin) and the error copy in `src/client/user-facing.ts`, such as "Add a key and value." and "That key file didn't open this handoff.".
+Not mapped yet: the CLI (`podaj init`, including `--url`/`--token` and `--deploy`; `podaj wait KEY`; `podaj decrypt` with `PODAJ_KEY_DIR=<dir>` reading a `PODAJ1.` blob on stdin) and the error copy in `src/client/user-facing.ts`, such as "Add a key and value." and "That key file didn't open this handoff.".

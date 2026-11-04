@@ -4,7 +4,7 @@ Minimal one-shot env-var handoff (Worker + Vite UI). Deploy with **wrangler** on
 
 People deploy their own Worker (README Deploy to Cloudflare button, or `.github/workflows/deploy.yml` on a clone). Do not point agents at `podaj.hasparus.workers.dev` — that host is closed. Off localhost, API and PartyServer require `PODAJ_TOKEN`.
 
-Agent CLI: `bun run podaj init` (keygen, deploy, `~/.config/podaj/config.json`) then `bun run podaj wait KEY...`. `wait` uses that config, stays on the handoff WebSocket, and polls only if the socket fails.
+Agent CLI: `podaj init --url <workers.dev> --token <token>` when the operator already used the README deploy button, or `podaj init --deploy` when `wrangler login` is already done. A terminal with no flags prompts (connect, or deploy and wait on Cloudflare login). Then `podaj wait KEY...`. `wait` stays non-interactive: fill link on stderr, JSON on stdout, WebSocket first, poll only if that socket fails. Global install is `npm install -g podaj` (`bin`, wrangler, and the client build ship with the package). Deploys stage under `~/.local/share/podaj/worker` and do not rewrite the installed `wrangler.jsonc`.
 
 ## UI (Direction A · Zinc Ledger)
 

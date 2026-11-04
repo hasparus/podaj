@@ -1,8 +1,19 @@
 #!/usr/bin/env node
+import {
+  cancel,
+  intro,
+  isCancel,
+  log,
+  outro,
+  password,
+  select,
+  text,
+} from "@clack/prompts";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { copyFileSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { copyFileSync, existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 
@@ -11,17 +22,15 @@ import {
   readConfig,
   writeConfig,
 } from "./config.mjs";
-import {
-  bindNamespace,
-  composeUrl,
-  KV_PLACEHOLDER,
-  kvNamespaceId,
-  workersUrl,
-} from "./deploy-text.mjs";
+import { composeUrl, kvNamespaceId, workersUrl } from "./deploy-text.mjs";
+import { initArgs } from "./init-args.mjs";
+import { runInit } from "./init-flow.mjs";
+import { probeInstance } from "./instance.mjs";
 import { keyDir } from "./keygen.mjs";
 import { generateKeypair, joinPrivate, joinPublic } from "./keypair.mjs";
 import { openPodaj1 } from "./open-podaj1.mjs";
 import { selectVars } from "./select-vars.mjs";
+import { clientBuilt, stageWorker, workerStageDir } from "./stage-worker.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(here);
@@ -30,13 +39,27 @@ const KEY_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const usage = () => {
   console.error(`usage:
   podaj init
+  podaj init --url https://<name>.workers.dev --token <token>
+  podaj init --deploy
   podaj wait [KEY ...]
   podaj keygen
   podaj decrypt [PODAJ1.blob]
 
-init   new recipient key, deploy this checkout, write ~/.config/podaj/config.json
+init   connect to a worker you already deployed, or deploy one after Cloudflare login
 wait   reserve a fill link, block until those keys are pasted, print them as JSON`);
   process.exit(2);
+};
+
+/**
+ * @param {unknown} value
+ * @returns {Promise<string>}
+ */
+const answered = async (value) => {
+  if (isCancel(value) || typeof value !== "string" || value.length === 0) {
+    cancel("stopped");
+    process.exit(0);
+  }
+  return value;
 };
 
 /**
@@ -57,7 +80,7 @@ const capture = (bin, args, opts = {}) => {
     throw result.error;
   }
   if (result.status !== 0) {
-    process.exit(result.status ?? 1);
+    throw new Error(`${args.join(" ")} failed`);
   }
   return output;
 };
@@ -234,43 +257,187 @@ const waitReady = async (id, base, token) => {
   fail("timed out waiting for ready");
 };
 
-const init = async () => {
-  process.stderr.write("generating recipient key\n");
-  const dir = await generateKeypair(keyDir());
-  copyFileSync(
-    joinPublic(dir),
-    join(repoRoot, "public", "recipient.pem"),
-  );
-
-  const wrangler = tool("wrangler");
-  capture(wrangler, ["whoami"]);
-
-  const configFile = join(repoRoot, "wrangler.jsonc");
-  const source = readFileSync(configFile, "utf8");
-  if (source.includes(KV_PLACEHOLDER)) {
-    process.stderr.write("creating KV namespace\n");
-    const created = capture(wrangler, [
-      "kv",
-      "namespace",
-      "create",
-      "podaj-handoffs",
-    ]);
-    writeFileSync(configFile, bindNamespace(source, kvNamespaceId(created)));
+/**
+ * @param {string} dir
+ */
+const publishPublicKey = (dir) => {
+  if (repoRoot.split(sep).includes("node_modules")) {
+    return;
   }
+  copyFileSync(joinPublic(dir), join(repoRoot, "public", "recipient.pem"));
+};
 
-  process.stderr.write("building\n");
-  capture(tool("vite"), ["build"]);
-  process.stderr.write("deploying\n");
-  const deployed = capture(wrangler, ["deploy"]);
-  const url = workersUrl(deployed);
-  const token = randomBytes(32).toString("hex");
-  capture(wrangler, ["secret", "put", "PODAJ_TOKEN"], { input: `${token}\n` });
-
-  const file = defaultConfigPath();
-  writeConfig(file, { token, url });
-  process.stdout.write(
-    `${JSON.stringify({ url, config: file, keys: dir }, null, 2)}\n`,
-  );
+/**
+ * @param {string[]} argv
+ */
+const init = async (argv) => {
+  const args = initArgs(argv);
+  const tty = process.stdin.isTTY === true && process.stdout.isTTY === true;
+  const interactive = tty && !args.deploy && args.url === undefined;
+  if (interactive) {
+    intro("podaj");
+  }
+  const wrangler = tool("wrangler");
+  await runInit(args, {
+    askToken: () =>
+      answered(
+        password({
+          message: "Instance token",
+          validate: (value) =>
+            value === undefined || value.length === 0
+              ? "token is required"
+              : undefined,
+        }),
+      ),
+    askTokenSource: async () => {
+      const source = await answered(
+        select({
+          message: "Instance token",
+          options: [
+            {
+              hint: "you already set PODAJ_TOKEN on that worker",
+              label: "I have the token",
+              value: "have",
+            },
+            {
+              hint: "wrangler stores a new token as PODAJ_TOKEN",
+              label: "Set a new token on the worker",
+              value: "set",
+            },
+          ],
+        }),
+      );
+      if (source !== "have" && source !== "set") {
+        throw new Error(`unexpected token choice ${source}`);
+      }
+      return source;
+    },
+    askUrl: () =>
+      answered(
+        text({
+          message: "Worker URL",
+          placeholder: "https://podaj.<account>.workers.dev",
+          validate: (value) => {
+            if (value === undefined || value.length === 0) {
+              return "enter an http(s) url";
+            }
+            try {
+              const origin = new URL(
+                value.includes("://") ? value : `https://${value}`,
+              );
+              return origin.protocol === "https:" || origin.protocol === "http:"
+                ? undefined
+                : "enter an http(s) url";
+            } catch {
+              return "enter an http(s) url";
+            }
+          },
+        }),
+      ),
+    askWorkerName: () =>
+      answered(
+        text({
+          defaultValue: "podaj",
+          initialValue: "podaj",
+          message: "Worker name",
+        }),
+      ),
+    chooseMode: async () => {
+      const mode = await answered(
+        select({
+          message: "Where is your podaj?",
+          options: [
+            {
+              hint: "Deploy to Cloudflare button in the README",
+              label: "I already deployed one",
+              value: "connect",
+            },
+            { label: "Deploy a new worker", value: "deploy" },
+          ],
+        }),
+      );
+      if (mode !== "connect" && mode !== "deploy") {
+        throw new Error(`unexpected choice ${mode}`);
+      }
+      return mode;
+    },
+    createKv: () =>
+      kvNamespaceId(
+        capture(wrangler, ["kv", "namespace", "create", "podaj-handoffs"]),
+      ),
+    deploy: (configPath) =>
+      capture(wrangler, ["deploy", "--config", configPath]),
+    ensureClient: () => {
+      if (clientBuilt(repoRoot)) {
+        return;
+      }
+      const vite = tool("vite");
+      if (!existsSync(vite)) {
+        throw new Error(
+          "client build is missing. Reinstall podaj so dist/client ships with the package.",
+        );
+      }
+      capture(vite, ["build"]);
+    },
+    existingKvId: () => readConfig(defaultConfigPath())?.kvId,
+    hasPrivateKey: () => existsSync(joinPrivate(keyDir())),
+    isTTY: tty,
+    keyDir,
+    keygen: async () => {
+      const dir = await generateKeypair(keyDir());
+      publishPublicKey(dir);
+      return dir;
+    },
+    login: () => {
+      const child = spawnSync(wrangler, ["login"], { stdio: "inherit" });
+      if (child.error !== undefined) {
+        throw child.error;
+      }
+      if (child.status !== 0) {
+        throw new Error("Cloudflare login failed");
+      }
+    },
+    mintToken: () => randomBytes(32).toString("hex"),
+    note: (message) => {
+      log.info(message);
+    },
+    probe: probeInstance,
+    publicPem: (dir) => readFileSync(joinPublic(dir), "utf8"),
+    putSecret: (target, token) => {
+      const secretArgs = ["secret", "put", "PODAJ_TOKEN"];
+      if (target.configPath !== undefined) {
+        secretArgs.push("--config", target.configPath);
+      }
+      if (target.name !== undefined) {
+        secretArgs.push("--name", target.name);
+      }
+      capture(wrangler, secretArgs, { input: `${token}\n` });
+    },
+    save: (config) => {
+      const file = defaultConfigPath();
+      writeConfig(file, {
+        token: config.token,
+        url: config.url,
+        ...(config.kvId === undefined ? {} : { kvId: config.kvId }),
+      });
+      if (interactive) {
+        outro(config.url);
+      }
+      process.stdout.write(
+        `${JSON.stringify({ ...config, config: file }, null, 2)}\n`,
+      );
+    },
+    stage: (kvId, publicPem) =>
+      stageWorker({
+        kvId,
+        packageRoot: repoRoot,
+        publicPem,
+        stage: workerStageDir(homedir()),
+      }),
+    whoami: () =>
+      spawnSync(wrangler, ["whoami"], { encoding: "utf8" }).status === 0,
+    workersUrl,
+  });
 };
 
 /**
@@ -352,26 +519,36 @@ const sealedBody = (value) => {
 
 const [command, ...rest] = process.argv.slice(2);
 
-switch (command) {
-  case "init":
-    await init();
-    break;
-  case "wait":
-    await wait(rest);
-    break;
-  case "keygen": {
-    const dir = await generateKeypair(keyDir());
-    process.stdout.write(`${dir}\n`);
-    break;
+try {
+  switch (command) {
+    case "init":
+      await init(rest);
+      break;
+    case "wait":
+      await wait(rest);
+      break;
+    case "keygen": {
+      const dir = await generateKeypair(keyDir());
+      process.stdout.write(`${dir}\n`);
+      break;
+    }
+    case "decrypt": {
+      const child = spawnSync(
+        process.execPath,
+        [
+          fileURLToPath(new URL("./decrypt-handoff.mjs", import.meta.url)),
+          ...rest,
+        ],
+        { stdio: "inherit" },
+      );
+      process.exit(child.status ?? 1);
+      break;
+    }
+    default:
+      usage();
   }
-  case "decrypt": {
-    const child = spawnSync(process.execPath, [
-      fileURLToPath(new URL("./decrypt-handoff.mjs", import.meta.url)),
-      ...rest,
-    ], { stdio: "inherit" });
-    process.exit(child.status ?? 1);
-    break;
-  }
-  default:
-    usage();
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(message);
+  process.exit(1);
 }

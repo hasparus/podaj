@@ -12,8 +12,12 @@ export const configPath = (env, home) => {
 };
 
 /**
+ * @typedef {{ url: string, token: string, kvId?: string }} PodajConfig
+ */
+
+/**
  * @param {string} file
- * @returns {{ url: string, token: string } | null}
+ * @returns {PodajConfig | null}
  */
 export const readConfig = (file) => {
   let raw;
@@ -39,12 +43,17 @@ export const readConfig = (file) => {
   ) {
     throw new Error(`invalid podaj config: ${file}`);
   }
-  return { url: parsed.url, token: parsed.token };
+  const kvId = parsed.kvId;
+  return {
+    token: parsed.token,
+    url: parsed.url,
+    ...(typeof kvId === "string" ? { kvId } : {}),
+  };
 };
 
 /**
  * @param {string} file
- * @param {{ url: string, token: string }} config
+ * @param {PodajConfig} config
  */
 export const writeConfig = (file, config) => {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });

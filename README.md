@@ -8,15 +8,30 @@ Deploy it to **your** Cloudflare account. There is no shared podaj. The old upst
 
 The button clones this repo into your Git account, provisions the KV namespace and the PartyServer Durable Object, and turns on Workers Builds so later pushes deploy themselves.
 
-## From a checkout
+## Use it
 
-One command does the rest: a new recipient keypair, a Worker in your Cloudflare account, and `~/.config/podaj/config.json` (`url` + `token`).
+The button is the path to take. After that Worker exists:
 
 ```bash
-bun install
-bunx wrangler login
-bun run podaj init
+npm install -g podaj
+podaj init
 ```
+
+The registry name is `podaj`. From a checkout of this repo, `npm install -g .` installs the same bin.
+
+`podaj init` in a terminal asks whether to connect to the Worker you already deployed, or deploy a new one. Connecting asks for the workers.dev URL and the instance token. If the Worker has no token yet, the CLI logs you into Cloudflare in the browser (`wrangler login`) and stores one. Deploying does the same login wait, generates a recipient key, and deploys from this package without editing the installed files. Config lands in `~/.config/podaj/config.json`.
+
+From a checkout, `bun run podaj init` is the same command.
+
+Agents skip the prompts:
+
+```bash
+podaj init --url https://<name>.workers.dev --token "$PODAJ_TOKEN"
+podaj init --deploy
+podaj wait OPENAI_API_KEY
+```
+
+`--deploy` requires an existing `wrangler login`. The first run creates a KV namespace and stores its id in the config. Later deploys reuse that id.
 
 Anyone without the token gets nothing: the API and the ready WebSocket stay shut, and localhost is the only open host (for `bun run dev`). The fill link `podaj wait` prints already carries the token in the URL fragment, so the browser stores it for that tab.
 
@@ -48,12 +63,12 @@ bun run deploy     # vite build + wrangler deploy
 ## CLI
 
 ```bash
-bun run podaj init
-bun run podaj wait OPENAI_API_KEY ANTHROPIC_API_KEY
-bun run podaj decrypt                 # PODAJ1 blob on stdin
+podaj init
+podaj wait OPENAI_API_KEY ANTHROPIC_API_KEY
+podaj decrypt                 # PODAJ1 blob on stdin
 ```
 
-`init` writes `~/.local/share/podaj/{public,private}.pem`, deploys, and saves the global config.
+`init` writes `~/.local/share/podaj/{public,private}.pem` when it deploys (and when you connect and no key exists yet). A deploy also copies that public key into the staged Worker assets. Connecting keeps the key you already have, because the deployed site encrypts to it.
 
 `wait` reserves a compose link, prints it, and blocks on the handoff WebSocket (status poll only if that socket drops). When the page has uploaded, it reads the one-shot bundle, decrypts with the local private key, and prints JSON for the keys you named. Omit the names to print every pasted key.
 

@@ -1,10 +1,31 @@
 {
   "name": "podaj",
-  "private": true,
+  "version": "0.1.0",
+  "description": "One-shot encrypted env handoff. Deploy your own Worker, then hand variables over a link.",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hasparus/podaj.git"
+  },
+  "bin": {
+    "podaj": "scripts/podaj.mjs"
+  },
+  "files": [
+    "scripts",
+    "src",
+    "dist/client",
+    "wrangler.jsonc",
+    "public/recipient.pem.example",
+    "README.md"
+  ],
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "packageManager": "bun@1.4.4",
   "scripts": {
     "build": "vite build",
+    "prepack": "vite build && rm -f dist/client/recipient.pem",
     "check": "bun run typecheck && bun run lint",
     "deploy": "bun run build && wrangler deploy",
     "dev": "vite build && wrangler dev",
@@ -31,16 +52,17 @@
     "typescript": "7.0.2",
     "ultracite": "8.1.1",
     "vite": "8.3.4",
-    "vitest": "5.0.5",
-    "wrangler": "4.45.0",
-    "ws": "^8.22.1"
+    "vitest": "5.0.5"
   },
   "dependencies": {
+    "@clack/prompts": "1.7.0",
     "@foldkit/vite-plugin": "0.29.0",
     "@fontsource/commit-mono": "^5.3.0",
     "effect": "4.1.2",
     "foldkit": "0.170.0",
     "partyserver": "^0.5.10",
-    "pixelarticons": "2.4.2"
+    "pixelarticons": "2.4.2",
+    "wrangler": "4.45.0",
+    "ws": "^8.22.1"
   }
 }
