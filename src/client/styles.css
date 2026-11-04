@@ -70,6 +70,24 @@ body {
   padding: 1rem 1rem 1.75rem;
 }
 
+.compose-meta,
+.compose-hint {
+  margin: 0 0 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.compose-meta .pickup-url {
+  font-size: 0.6875rem;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.main.compose-ready .compose-meta .pickup-url {
+  color: color-mix(in srgb, #86efac 70%, var(--text));
+}
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;

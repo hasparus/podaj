@@ -4,6 +4,9 @@ const API_ERROR_COPY: Record<string, string> = {
   "invalid json": "Couldn't send. Try again.",
   "origin not allowed": "Sending isn't allowed from this page.",
   "payload too large": "That's too large to send.",
+  "not ready": "Nothing has been shared to this link yet.",
+  "invalid write": "This compose link isn't valid.",
+  "already shared": "This link was already filled.",
 };
 
 export const HOW_IT_WORKS =

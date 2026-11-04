@@ -11,6 +11,7 @@ import {
   type HandoffVariables,
 } from "../crypto/podaj1.js";
 import { looksLikeEnvPaste, parseEnvText } from "./parse-env.js";
+import type { AppRoute } from "./parse-route.js";
 import {
   apiHandoffErrorText,
   causeMessage,
@@ -40,10 +41,13 @@ const Status = Schema.Union([
 ]);
 
 export const ModelSchema = Schema.Struct({
+  autosaveRevision: Schema.Number,
+  composeReady: Schema.Boolean,
   fingerprint: Schema.Option(Schema.String),
   handoffId: Schema.Option(Schema.String),
   nextRowId: Schema.Number,
-  page: Schema.Literals(["receive", "send"]),
+  page: Schema.Literals(["compose", "receive", "send"]),
+  writeToken: Schema.Option(Schema.String),
   publicKeyPem: Schema.Option(Schema.String),
   rows: Schema.Array(Row),
   sealed: Schema.Option(Schema.String),
@@ -59,16 +63,16 @@ export const Message = defineMessageUnion({
   ChangedRowKey: { key: Schema.String, rowId: Schema.String },
   ChangedRowValue: { rowId: Schema.String, value: Schema.String },
   ClickedAdd: {},
-  ClickedCreateLink: {},
+  ClickedShare: {},
   ClickedRemoveRow: { rowId: Schema.String },
   ClickedToggleReveal: { rowId: Schema.String },
   PastedEnv: { text: Schema.String },
-  FailedCreateLink: { text: Schema.String },
+  FailedShare: { text: Schema.String },
   FailedDecrypt: { text: Schema.String },
   FailedLoadHandoff: { text: Schema.String },
   FailedLoadRecipient: { text: Schema.String },
   SelectedKeyFile: { file: Schema.instanceOf(File) },
-  SucceededCreateLink: { url: Schema.String },
+  SucceededShare: { url: Schema.String },
   SucceededDecrypt: { vars: Schema.Array(EnvVarRow) },
   SucceededLoadHandoff: { sealed: Schema.String },
   SucceededLoadRecipient: {
@@ -195,29 +199,45 @@ const LoadHandoff = DefineCommand("LoadHandoff", {
     ),
 });
 
-const CreateLink = DefineCommand("CreateLink", {
+const ShareHandoff = DefineCommand("ShareHandoff", {
   args: {
+    handoffId: Schema.Option(Schema.String),
     publicKeyPem: Schema.String,
+    revision: Schema.Number,
     rows: Schema.Array(Row),
+    waitMs: Schema.Number,
+    writeToken: Schema.Option(Schema.String),
   },
-  messages: [Message.SucceededCreateLink, Message.FailedCreateLink],
-  execute: ({ publicKeyPem, rows }) =>
+  messages: [Message.SucceededShare, Message.FailedShare],
+  execute: ({ handoffId, publicKeyPem, rows, waitMs, writeToken }) =>
     Effect.gen(function* () {
+      if (waitMs > 0) {
+        yield* Effect.sleep(`${waitMs} millis`);
+      }
       const payload = toPayload(rows);
       if (payload.vars.length === 0) {
-        return Message.FailedCreateLink({ text: "Add a key and value." });
+        return Message.FailedShare({ text: "Add a key and value." });
       }
       const sealed = yield* Effect.tryPromise({
         try: () => seal(payload, publicKeyPem, RECIPIENT_SLUG),
         catch: (error) => error,
       });
+      const slotId = Option.getOrNull(handoffId);
+      const token = Option.getOrNull(writeToken);
+      const useReserved = slotId !== null && token !== null;
       const response = yield* Effect.tryPromise({
         try: () =>
-          fetch("/api/handoffs", {
-            body: JSON.stringify({ sealed }),
-            headers: { "Content-Type": "application/json" },
-            method: "POST",
-          }),
+          useReserved
+            ? fetch(`/api/handoffs/${slotId}`, {
+                body: JSON.stringify({ sealed, writeToken: token }),
+                headers: { "Content-Type": "application/json" },
+                method: "PUT",
+              })
+            : fetch("/api/handoffs", {
+                body: JSON.stringify({ sealed }),
+                headers: { "Content-Type": "application/json" },
+                method: "POST",
+              }),
         catch: (error) => error,
       });
       if (!response.ok) {
@@ -225,7 +245,16 @@ const CreateLink = DefineCommand("CreateLink", {
           try: () => response.json(),
           catch: () => ({}),
         })) as { error?: string };
-        return Message.FailedCreateLink({
+        if (
+          useReserved &&
+          response.status === 409 &&
+          err.error === "already shared"
+        ) {
+          return Message.SucceededShare({
+            url: new URL(`/h/${slotId}`, globalThis.location.origin).toString(),
+          });
+        }
+        return Message.FailedShare({
           text: apiHandoffErrorText(err.error, response.status),
         });
       }
@@ -234,15 +263,15 @@ const CreateLink = DefineCommand("CreateLink", {
         catch: (error) => error,
       })) as { url?: unknown };
       if (typeof data.url !== "string") {
-        return Message.FailedCreateLink({
+        return Message.FailedShare({
           text: "Couldn't send (invalid response).",
         });
       }
-      return Message.SucceededCreateLink({ url: data.url });
+      return Message.SucceededShare({ url: data.url });
     }).pipe(
       Effect.catch((error) =>
         Effect.succeed(
-          Message.FailedCreateLink({
+          Message.FailedShare({
             text: userStatusText(causeMessage(error)),
           }),
         ),
@@ -276,74 +305,145 @@ const DecryptHandoff = DefineCommand("DecryptHandoff", {
     ),
 });
 
-export const init = (
-  handoffId: string | null,
-): ReturnType<Runtime.ApplicationInit<Model, typeof Message.Type>> => {
-  if (handoffId !== null) {
-    return {
-      commands: [LoadHandoff({ handoffId })],
-      model: {
-        fingerprint: Option.none(),
+const emptySendModel = (): Model => ({
+  autosaveRevision: 0,
+  composeReady: false,
+  fingerprint: Option.none(),
+  handoffId: Option.none(),
+  nextRowId: 2,
+  page: "send",
+  publicKeyPem: Option.none(),
+  rows: [newRow(1)],
+  sealed: Option.none(),
+  sending: false,
+  showKeyPicker: false,
+  status: hiddenStatus(),
+  vars: [],
+  writeToken: Option.none(),
+});
+
+const dispatchComposeReady = (url: string): void => {
+  if (typeof globalThis.dispatchEvent !== "function") {
+    return;
+  }
+  globalThis.dispatchEvent(
+    new CustomEvent("podaj:ready", { detail: { url } }),
+  );
+};
+
+const scheduleComposeUpload = (
+  model: Model,
+  waitMs: number,
+): Update.Return<Model, Message> | null => {
+  if (model.page !== "compose" || Option.isNone(model.writeToken)) {
+    return null;
+  }
+  const pem = Option.getOrNull(model.publicKeyPem);
+  const handoffId = Option.getOrNull(model.handoffId);
+  const writeToken = Option.getOrNull(model.writeToken);
+  if (pem === null || handoffId === null || writeToken === null) {
+    return null;
+  }
+  if (toPayload(model.rows).vars.length === 0) {
+    return null;
+  }
+  const revision = model.autosaveRevision + 1;
+  return {
+    commands: [
+      ShareHandoff({
         handoffId: Option.some(handoffId),
+        publicKeyPem: pem,
+        revision,
+        rows: model.rows,
+        waitMs,
+        writeToken: Option.some(writeToken),
+      }),
+    ],
+    model: modifyFields(model, {
+      autosaveRevision: () => revision,
+      sending: () => true,
+    }),
+  };
+};
+
+const afterComposeEdit = (
+  model: Model,
+  waitMs: number,
+): Update.Return<Model, Message> => {
+  const scheduled = scheduleComposeUpload(model, waitMs);
+  return scheduled ?? { model };
+};
+
+export const init = (
+  route: AppRoute,
+): ReturnType<Runtime.ApplicationInit<Model, typeof Message.Type>> => {
+  if (route.page === "receive") {
+    return {
+      commands: [LoadHandoff({ handoffId: route.handoffId })],
+      model: {
+        ...emptySendModel(),
+        handoffId: Option.some(route.handoffId),
         page: "receive",
-        publicKeyPem: Option.none(),
-        nextRowId: 2,
-        rows: [newRow(1)],
-        sealed: Option.none(),
-        sending: false,
-        showKeyPicker: false,
-        status: hiddenStatus(),
-        vars: [],
+      },
+    };
+  }
+  if (route.page === "compose") {
+    const missingWrite = route.writeToken === null;
+    return {
+      commands: [LoadRecipientKey()],
+      model: {
+        ...emptySendModel(),
+        handoffId: Option.some(route.handoffId),
+        page: "compose",
+        writeToken:
+          route.writeToken === null
+            ? Option.none()
+            : Option.some(route.writeToken),
+        status: missingWrite
+          ? statusError("This compose link is incomplete.")
+          : hiddenStatus(),
       },
     };
   }
   return {
     commands: [LoadRecipientKey()],
-    model: {
-      fingerprint: Option.none(),
-      handoffId: Option.none(),
-      nextRowId: 2,
-      page: "send",
-      publicKeyPem: Option.none(),
-      rows: [newRow(1)],
-      sealed: Option.none(),
-      sending: false,
-      showKeyPicker: false,
-      status: hiddenStatus(),
-      vars: [],
-    },
+    model: emptySendModel(),
   };
 };
 
 export const update = (model: Model, message: Message) =>
   Message.match<Update.Return<Model, Message>>(message, {
-    ChangedRowKey: ({ key, rowId }) => ({
-      model: modifyFields(model, {
-        rows: (rows) =>
-          rows.map((row) =>
-            row.id === rowId
-              ? { id: row.id, key, revealed: row.revealed, value: row.value }
-              : row,
-          ),
-      }),
-    }),
-    ChangedRowValue: ({ rowId, value }) => ({
-      model: modifyFields(model, {
-        rows: (rows) =>
-          rows.map((row) =>
-            row.id === rowId
-              ? { id: row.id, key: row.key, revealed: row.revealed, value }
-              : row,
-          ),
-      }),
-    }),
+    ChangedRowKey: ({ key, rowId }) =>
+      afterComposeEdit(
+        modifyFields(model, {
+          rows: (rows) =>
+            rows.map((row) =>
+              row.id === rowId
+                ? { id: row.id, key, revealed: row.revealed, value: row.value }
+                : row,
+            ),
+        }),
+        600,
+      ),
+    ChangedRowValue: ({ rowId, value }) =>
+      afterComposeEdit(
+        modifyFields(model, {
+          rows: (rows) =>
+            rows.map((row) =>
+              row.id === rowId
+                ? { id: row.id, key: row.key, revealed: row.revealed, value }
+                : row,
+            ),
+        }),
+        600,
+      ),
     ClickedAdd: () => ({
       model: modifyFields(model, {
         nextRowId: (nextRowId) => nextRowId + 1,
         rows: (rows) => [...rows, newRow(model.nextRowId)],
       }),
     }),
-    ClickedCreateLink: () => {
+    ClickedShare: () => {
       const pem = Option.getOrNull(model.publicKeyPem);
       if (pem === null) {
         return {
@@ -353,8 +453,27 @@ export const update = (model: Model, message: Message) =>
           }),
         };
       }
+      if (
+        model.page === "compose" &&
+        Option.isNone(model.writeToken)
+      ) {
+        return {
+          model: modifyFields(model, {
+            status: () => statusError("This compose link is incomplete."),
+          }),
+        };
+      }
       return {
-        commands: [CreateLink({ publicKeyPem: pem, rows: model.rows })],
+        commands: [
+          ShareHandoff({
+            handoffId: model.handoffId,
+            publicKeyPem: pem,
+            revision: model.autosaveRevision + 1,
+            rows: model.rows,
+            waitMs: 0,
+            writeToken: model.writeToken,
+          }),
+        ],
         model: modifyFields(model, {
           sending: () => true,
           status: () => hiddenStatus(),
@@ -378,13 +497,14 @@ export const update = (model: Model, message: Message) =>
         };
       }
       const { nextRowId, rows } = rowsFromEnvVars(vars, model.nextRowId);
-      return {
-        model: modifyFields(model, {
+      return afterComposeEdit(
+        modifyFields(model, {
           nextRowId: () => nextRowId,
           rows: () => rows,
           status: () => hiddenStatus(),
         }),
-      };
+        0,
+      );
     },
     ClickedToggleReveal: ({ rowId }) => ({
       model: modifyFields(model, {
@@ -401,7 +521,7 @@ export const update = (model: Model, message: Message) =>
           ),
       }),
     }),
-    FailedCreateLink: ({ text }) => ({
+    FailedShare: ({ text }) => ({
       model: modifyFields(model, {
         sending: () => false,
         status: () => statusError(text),
@@ -432,19 +552,29 @@ export const update = (model: Model, message: Message) =>
         model: modifyFields(model, { status: () => hiddenStatus() }),
       };
     },
-    SucceededCreateLink: ({ url }) => ({
-      model: modifyFields(model, {
-        rows: (rows) =>
-          rows.map((row) => ({
-            id: row.id,
-            key: row.key,
-            revealed: row.revealed,
-            value: "",
-          })),
-        sending: () => false,
-        status: () => ({ _tag: "Ok", text: `Share this once.\n${url}` }),
-      }),
-    }),
+    SucceededShare: ({ url }) => {
+      if (model.page === "compose") {
+        dispatchComposeReady(url);
+      }
+      const statusText =
+        model.page === "compose"
+          ? "Ready."
+          : `Share this once.\n${url}`;
+      return {
+        model: modifyFields(model, {
+          composeReady: () => model.page === "compose",
+          rows: (rows) =>
+            rows.map((row) => ({
+              id: row.id,
+              key: row.key,
+              revealed: row.revealed,
+              value: "",
+            })),
+          sending: () => false,
+          status: () => ({ _tag: "Ok", text: statusText }),
+        }),
+      };
+    },
     SucceededDecrypt: ({ vars }) => ({
       model: modifyFields(model, {
         showKeyPicker: () => false,
@@ -549,9 +679,54 @@ const sendView = (model: Model, h: HtmlBuilder<Message>): Html => {
     ),
   );
 
+  const composePickup =
+    model.page === "compose"
+      ? Option.match(model.handoffId, {
+          onNone: () => null,
+          onSome: (id) => {
+            const pickup = `${globalThis.location.origin}/h/${id}`;
+            return h.p(
+              [h.Class("compose-meta")],
+              [
+                "Recipient link (already set): ",
+                h.code([h.Class("pickup-url")], [pickup]),
+                model.sending ? " · Uploading…" : "",
+                model.composeReady ? " · Ready." : "",
+              ],
+            );
+          },
+        })
+      : null;
+
+  const shareButton =
+    model.page === "send"
+      ? h.button(
+          [
+            h.Class("btn btn-primary"),
+            h.Type("button"),
+            h.Disabled(model.sending),
+            h.OnClick(Message.ClickedShare()),
+          ],
+          ["Share"],
+        )
+      : null;
+
+  const composeHint =
+    model.page === "compose"
+      ? h.p([h.Class("compose-hint")], [
+          "Paste or edit — uploads automatically when rows are complete.",
+        ])
+      : null;
+
   return h.main(
-    [h.Class("main")],
     [
+      h.Class(
+        model.composeReady ? "main compose-ready" : "main",
+      ),
+    ],
+    [
+      composePickup,
+      composeHint,
       h.div(
         [
           h.Class("var-table"),
@@ -577,19 +752,11 @@ const sendView = (model: Model, h: HtmlBuilder<Message>): Html => {
             [h.Class("btn"), h.Type("button"), h.OnClick(Message.ClickedAdd())],
             ["Add"],
           ),
-          h.button(
-            [
-              h.Class("btn btn-primary"),
-              h.Type("button"),
-              h.Disabled(model.sending),
-              h.OnClick(Message.ClickedCreateLink()),
-            ],
-            ["Create link"],
-          ),
+          ...(shareButton === null ? [] : [shareButton]),
         ],
       ),
       statusView(model, h),
-    ],
+    ].filter((node): node is Html => node !== null),
   );
 };
 
@@ -655,7 +822,7 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
     [h.Class("shell")],
     [
       siteHeader(model, h),
-      model.page === "send" ? sendView(model, h) : receiveView(model, h),
+      model.page === "receive" ? receiveView(model, h) : sendView(model, h),
       siteFooter(h),
     ],
   ),

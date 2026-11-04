@@ -18,6 +18,20 @@
       "id": "87bb68bfae9148e2ae1a5d6781b1e48e"
     }
   ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "HANDOFF_PARTY",
+        "class_name": "HandoffParty"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-handoff-party",
+      "new_sqlite_classes": ["HandoffParty"]
+    }
+  ],
   "vars": {
     "MAX_HANDOFF_BYTES": "32768"
   }

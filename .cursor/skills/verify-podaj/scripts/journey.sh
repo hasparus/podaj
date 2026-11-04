@@ -21,7 +21,7 @@ KEY1=PODAJ_VERIFY_A; VAL1="alpha-$RUN_ID"; KEY2=PODAJ_VERIFY_B; VAL2="beta=with 
 
 create_link() {
   ab open "$URL/" >/dev/null
-  ab wait --text "Create link" >/dev/null
+  ab wait --text "Share" >/dev/null
   want=$(openssl pkey -pubin -in "$KEY_DIR/public.pem" -outform DER | sha256sum | cut -c1-16)
   ab wait .key-meta >/dev/null || die "header key id never appeared"   # fingerprint is computed async after first paint
   [ "$(ab get text .key-meta)" = "$want" ] || die "header fingerprint != run key ($want)"
@@ -37,8 +37,8 @@ create_link() {
   ab wait --fn 'document.querySelectorAll("input[placeholder=Value]")[1].type === "text"' >/dev/null || die "Show did not reveal row 2"
   shot 02-send-filled
   snap 02-send-filled
-  ab find role button click --name "Create link" >/dev/null
-  ab wait ".status.ok" >/dev/null || die "no .status.ok after Create link: $(ab get text .status 2>/dev/null)"
+  ab find role button click --name "Share" >/dev/null
+  ab wait ".status.ok" >/dev/null || die "no .status.ok after Share: $(ab get text .status 2>/dev/null)"
   status=$(ab get text .status.ok)
   printf '%s\n' "$status" > "$EVIDENCE/03-status.txt"
   [ "$(printf '%s\n' "$status" | head -1)" = "Share this once." ] || die "status copy: $status"

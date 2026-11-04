@@ -1,11 +1,11 @@
 ---
 name: verify-podaj
-description: Launch an isolated local podaj (Vite client + wrangler dev Worker with local KV and throwaway keys), drive the browser UI with agent-browser like a user (Create link, open /h/:id, Key file, one-shot gone), and capture screenshots, ARIA snapshots, a video and API status codes as evidence. Use before claiming any podaj UI, Worker or crypto change works, and when a PR needs screenshots or video for review.
+description: Launch an isolated local podaj (Vite client + wrangler dev Worker with local KV and throwaway keys), drive the browser UI with agent-browser like a user (Share, open /h/:id, Key file, one-shot gone), and capture screenshots, ARIA snapshots, a video and API status codes as evidence. Use before claiming any podaj UI, Worker or crypto change works, and when a PR needs screenshots or video for review.
 ---
 
 # verify-podaj
 
-podaj is a one-shot env-var handoff: the sender adds `KEY | value` rows and clicks **Create link**; the browser seals them with the public key in `/recipient.pem` and POSTs to the Worker (`POST /api/handoffs` -> KV, 24h TTL). The recipient opens `/h/<32 hex>`, picks their private key with **Key file**, and reads the table. `GET /api/handoffs/:id` deletes on read, so the second open returns `410`.
+podaj is a one-shot env-var handoff: the sender adds `KEY | value` rows and clicks **Share**; the browser seals them with the public key in `/recipient.pem` and POSTs to the Worker (`POST /api/handoffs` -> KV, 24h TTL). Agents can `POST /api/handoffs/reserve` and send `/s/<id>#writeToken` for fill-then-share. The recipient opens `/h/<32 hex>`, picks their private key with **Key file**, and reads the table. `GET /api/handoffs/:id` deletes on read, so the second open returns `410`.
 
 Primary surface: the browser SPA (`src/client/app.ts`, Foldkit; entry `src/client/entry.ts`). Secondary: `pnpm keygen` and `pnpm decrypt` (CLI, `scripts/`), and the Worker API (`src/worker.ts`). Feature map: [`features/README.md`](features/README.md).
 
@@ -57,13 +57,13 @@ Hand-driving (same handles the script uses):
 
 ```bash
 AB="/home/box/.local/bin/agent-browser --session $SESSION"
-$AB open "$URL/"; $AB wait --text "Create link"
-$AB snapshot -i                                     # textbox "OPENAI_API_KEY", textbox "Value", button Show/Remove/Add/Create link
+$AB open "$URL/"; $AB wait --text "Share"
+$AB snapshot -i                                     # textbox "OPENAI_API_KEY", textbox "Value", button Show/Remove/Add/Share
 $AB find nth 0 'input[placeholder="OPENAI_API_KEY"]' fill FOO
 $AB find nth 0 'input[placeholder="Value"]' fill bar
 $AB find role button click --name "Add"
 $AB wait --fn 'document.querySelectorAll("input[placeholder=OPENAI_API_KEY]").length === 2'
-$AB find role button click --name "Create link"
+$AB find role button click --name "Share"
 $AB wait ".status.ok"; $AB get text ".status.ok"    # "Share this once.\nhttp://127.0.0.1:<port>/h/<32 hex>"
 $AB open "$URL/h/<id>"; $AB wait --text "Key file"
 $AB upload "#key-file" "$PRIVATE_PEM"; $AB wait ".var-row-readonly"
@@ -76,7 +76,7 @@ Stable handles, from `src/client/app.ts`:
 | Brand / key id | `.brand` text `podaj` (CSS shows it uppercase); `.key-meta` = first 16 hex of SHA-256 over the recipient SPKI |
 | Send rows | `input[placeholder="OPENAI_API_KEY"]` (key), `input[placeholder="Value"]` (value, `type=password` until Show); index rows with `find nth <i>` |
 | Row buttons | `.row-actions` -> first button `Show`/`Hide`, second `Remove` (disabled when one row) |
-| Toolbar | role button `Add`, role button `Create link` |
+| Toolbar | role button `Add`, role button `Share` |
 | Status | `.status.ok` (success) / `.status.error` (message from `src/client/user-facing.ts`) |
 | Receive | `#key-file` (file input; the "Key file" label is not bound to it, so `find label` does not work), `.var-row-readonly > .cell-key / .cell-value` |
 | Footer | `.site-footer` = `HOW_IT_WORKS` in `src/client/user-facing.ts` |

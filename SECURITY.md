@@ -12,6 +12,7 @@ podaj encrypts **environment variable bundles** (`{ vars: [{ key, value }] }`) i
 - CSP, origin check on `POST /api/handoffs`, body size limit (`MAX_HANDOFF_BYTES`, default 32768).
 - One-shot read then delete; 24h TTL if unread.
 - Only `PODAJ1.` accepted (no legacy prefixes).
+- Optional `POST /api/handoffs/reserve` creates a pending slot; `PUT /api/handoffs/:id` with `writeToken` fills it. Write tokens are hashed in KV; prefer `sendUrl` with the token in the URL fragment. `GET /api/handoffs/:id/status` reports `pending` | `ready` | `gone` without consuming the handoff.
 
 ## Client
 

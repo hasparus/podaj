@@ -3,7 +3,7 @@ import "@fontsource/commit-mono/500.css";
 import { Runtime } from "foldkit";
 
 import { init, ModelSchema, update, view } from "./app.js";
-import { parseHandoffId } from "./parse-route.js";
+import { parseAppRoute } from "./parse-route.js";
 
 const container = document.querySelector("#app");
 if (!(container instanceof HTMLElement)) {
@@ -13,7 +13,13 @@ if (!(container instanceof HTMLElement)) {
 const application = Runtime.makeApplication({
   Model: ModelSchema,
   container,
-  init: () => init(parseHandoffId(globalThis.location.pathname)),
+  init: () =>
+    init(
+      parseAppRoute(
+        globalThis.location.pathname,
+        globalThis.location.hash,
+      ),
+    ),
   update,
   view,
 });

@@ -5,7 +5,7 @@ Minimal one-shot env-var handoff (Worker + Vite UI). Deploy with **wrangler** on
 ## UI (Direction A · Zinc Ledger)
 
 - Single recipient public key at `public/recipient.pem` (copy from `recipient.pem.example`); optional short hex in header — **no environments list or sidebar**
-- Vercel-adjacent **Key | Value** table, **Add**, **Create link**; minimal chrome; success copy `Share this once.` + URL
+- Vercel-adjacent **Key | Value** table, **Add**, **Share**; optional agent **reserve** flow (`/s/:id#writeToken` → fill → Share); success copy `Share this once.` + recipient URL
 - Footer on send/receive: plain-language security (see `HOW_IT_WORKS` in `src/client/user-facing.ts`)
 - Env-var handoff only (not vault fields)
 - User-facing copy: plain language only — wire format (`PODAJ1.`) stays in code/docs for implementers
