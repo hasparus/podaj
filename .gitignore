@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.alchemy/
 .wrangler/
 .dev.vars
 *.pem
