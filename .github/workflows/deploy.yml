@@ -12,14 +12,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: oven-sh/setup-bun@v2
         with:
-          version: 9
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
       - name: Deploy this clone
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -33,4 +29,4 @@ jobs:
             echo "Add public/recipient.pem (recipient public key) and push again."
             exit 1
           fi
-          pnpm deploy
+          bun run deploy

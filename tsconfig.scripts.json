@@ -12,8 +12,13 @@
     "types": ["node"]
   },
   "include": [
-    "scripts/keygen.mjs",
+    "scripts/config.mjs",
     "scripts/decrypt-handoff.mjs",
-    "scripts/podaj.mjs"
+    "scripts/deploy-text.mjs",
+    "scripts/keypair.mjs",
+    "scripts/keygen.mjs",
+    "scripts/open-podaj1.mjs",
+    "scripts/podaj.mjs",
+    "scripts/select-vars.mjs"
   ]
 }

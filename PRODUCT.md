@@ -10,7 +10,7 @@ Share environment variables once via a link. Senders fill a Key | Value table in
 
 ## Non-goals
 
-Password vault, multi-environment picker, MCP server, a shared public instance. Each operator deploys their own Worker. Agents use `pnpm podaj`.
+Password vault, multi-environment picker, MCP server, a shared public instance. Each operator deploys their own Worker. Agents use `bun run podaj init` and `bun run podaj wait`.
 
 ## Security story (user-facing)
 

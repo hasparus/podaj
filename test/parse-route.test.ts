@@ -8,6 +8,21 @@ describe("parseAppRoute", () => {
       parseAppRoute("/s/0123456789abcdef0123456789abcdef", "#deadbeef"),
     ).toEqual({
       handoffId: "0123456789abcdef0123456789abcdef",
+      instanceToken: null,
+      page: "compose",
+      writeToken: "deadbeef",
+    });
+  });
+
+  it("reads an instance token from the compose hash", () => {
+    expect(
+      parseAppRoute(
+        "/s/0123456789abcdef0123456789abcdef",
+        "#write=deadbeef&token=abc",
+      ),
+    ).toEqual({
+      handoffId: "0123456789abcdef0123456789abcdef",
+      instanceToken: "abc",
       page: "compose",
       writeToken: "deadbeef",
     });

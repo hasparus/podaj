@@ -1,9 +1,9 @@
 # Pre-commit fence. Cheating with --no-verify is blocked by agent hooks.
-# Install: pnpm exec lefthook install (also via prepare)
+# Install: bunx lefthook install (also via prepare)
 pre-commit:
   parallel: false
   commands:
     check:
-      run: pnpm check
+      run: bun run check
     test:
-      run: pnpm test
+      run: bun run test

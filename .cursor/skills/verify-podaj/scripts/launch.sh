@@ -16,17 +16,17 @@ PORT="${PODAJ_PORT:-$(free_port)}"
 INSPECTOR_PORT="$(free_port)"
 
 cd "$REPO"
-[ -d node_modules ] || pnpm install --frozen-lockfile >"$RUN_DIR/install.log" 2>&1
+[ -d node_modules ] || bun install --frozen-lockfile >"$RUN_DIR/install.log" 2>&1
 
 # Throwaway recipient keypair via the repo's own keygen, with HOME redirected.
-HOME="$RUN_DIR/home" node scripts/keygen.mjs >/dev/null
+HOME="$RUN_DIR/home" bun scripts/keygen.mjs >/dev/null
 KEY_DIR="$RUN_DIR/home/.local/share/podaj"
 
-# Same two steps as `pnpm dev`, but into a private dist dir.
-pnpm exec vite build --outDir "$RUN_DIR/dist" --emptyOutDir >"$RUN_DIR/build.log" 2>&1
+# Same two steps as `bun run dev`, but into a private dist dir.
+bunx vite build --outDir "$RUN_DIR/dist" --emptyOutDir >"$RUN_DIR/build.log" 2>&1
 cp "$KEY_DIR/public.pem" "$RUN_DIR/dist/recipient.pem"
 
-setsid nohup pnpm exec wrangler dev \
+setsid nohup bunx wrangler dev \
   --ip 127.0.0.1 --port "$PORT" --inspector-port "$INSPECTOR_PORT" \
   --assets "$RUN_DIR/dist" --persist-to "$RUN_DIR/state" \
   --show-interactive-dev-session=false --log-level info \

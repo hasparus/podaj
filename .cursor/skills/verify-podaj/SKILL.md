@@ -7,7 +7,7 @@ description: Launch an isolated local podaj (Vite client + wrangler dev Worker w
 
 podaj is a one-shot env-var handoff: the sender adds `key | value` rows and clicks **create link**; the browser seals them with the public key in `/recipient.pem` and POSTs to the Worker (`POST /api/handoffs` -> KV, 24h TTL). Agents can `POST /api/handoffs/reserve` and send `/s/<id>#writeToken` for fill-then-share. The recipient opens `/h/<32 hex>`, picks their private key with **key file**, and reads the table. `GET /api/handoffs/:id` deletes on read, so the second open returns `410`.
 
-Primary surface: the browser SPA (`src/client/app.ts`, Foldkit; entry `src/client/entry.ts`). Secondary: `pnpm keygen` and `pnpm decrypt` (CLI, `scripts/`), and the Worker API (`src/worker.ts`). Feature map: [`features/README.md`](features/README.md).
+Primary surface: the browser SPA (`src/client/app.ts`, Foldkit; entry `src/client/entry.ts`). Secondary: `bun run podaj keygen` and `bun run podaj decrypt` (CLI, `scripts/`), and the Worker API (`src/worker.ts`). Feature map: [`features/README.md`](features/README.md).
 
 All paths below are relative to this skill directory (`.cursor/skills/verify-podaj/`) unless they start with `/`.
 
@@ -18,9 +18,9 @@ ENV_FILE=$(./scripts/launch.sh)          # or ./scripts/launch.sh my-run-id
 source "$ENV_FILE"; echo "$URL"           # e.g. http://127.0.0.1:37147
 ```
 
-`scripts/launch.sh` does what `pnpm dev` does (`vite build && wrangler dev`) with every piece of state moved into `/tmp/podaj-verify-$RUN_ID/`:
+`scripts/launch.sh` does what `bun run dev` does (`vite build && wrangler dev`) with every piece of state moved into `/tmp/podaj-verify-$RUN_ID/`:
 
-1. `pnpm install --frozen-lockfile` if `node_modules` is missing.
+1. `bun install --frozen-lockfile` if `node_modules` is missing.
 2. Throwaway RSA-4096 keypair via the repo's own `scripts/keygen.mjs` with `HOME` redirected -> `$RUN_DIR/home/.local/share/podaj/{public,private}.pem`.
 3. `vite build --outDir $RUN_DIR/dist`, then copies the throwaway public key to `$RUN_DIR/dist/recipient.pem`. The repo's `public/recipient.pem`, `dist/` and `.wrangler/` are never touched.
 4. `wrangler dev --ip 127.0.0.1 --port <free> --inspector-port <free> --assets $RUN_DIR/dist --persist-to $RUN_DIR/state` in its own process group (`setsid`). KV is wrangler's local simulator in `$RUN_DIR/state`, so nothing reaches the production `podaj-handoffs` namespace.

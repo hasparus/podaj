@@ -7,7 +7,7 @@ source "$ENV_FILE"
 AB="${AGENT_BROWSER:-/home/box/.local/bin/agent-browser}"
 "$AB" --session "$SESSION" close >/dev/null 2>&1 || true
 if kill -0 "$PID" 2>/dev/null; then
-  kill -TERM -- "-$PID" 2>/dev/null || true   # whole process group we created with setsid (pnpm -> wrangler -> workerd)
+  kill -TERM -- "-$PID" 2>/dev/null || true   # whole process group we created with setsid (bun -> wrangler -> workerd)
   for _ in $(seq 1 10); do kill -0 "$PID" 2>/dev/null || break; sleep 0.5; done
   kill -KILL -- "-$PID" 2>/dev/null || true
 fi

@@ -4,7 +4,7 @@ Minimal one-shot env-var handoff (Worker + Vite UI). Deploy with **wrangler** on
 
 People deploy their own Worker (README Deploy to Cloudflare button, or `.github/workflows/deploy.yml` on a clone). Do not point agents at `podaj.hasparus.workers.dev` — that host is closed. Off localhost, API and PartyServer require `PODAJ_TOKEN`.
 
-Agent CLI: `pnpm podaj reserve|wait|decrypt|keygen` (`PODAJ_URL`, `PODAJ_TOKEN`). `wait` stays on the handoff WebSocket and polls only if the socket fails.
+Agent CLI: `bun run podaj init` (keygen, deploy, `~/.config/podaj/config.json`) then `bun run podaj wait KEY...`. `wait` uses that config, stays on the handoff WebSocket, and polls only if the socket fails.
 
 ## UI (Direction A · Zinc Ledger)
 
@@ -20,8 +20,8 @@ Agent CLI: `pnpm podaj reserve|wait|decrypt|keygen` (`PODAJ_URL`, `PODAJ_TOKEN`)
 
 Aligned with [rat-stack fence](https://ratstack.sh/systems/fence) for this single package (no monorepo):
 
-- `pnpm check` — `tsrs` typecheck (app + key scripts) and type-aware `oxlint` with **Ultracite core**
-- `pnpm test`
+- `bun run check` — `tsrs` typecheck (app + key scripts) and type-aware `oxlint` with **Ultracite core**
+- `bun run test`
 - Lefthook runs both on commit; `scripts/vcs-command-policy.js` blocks `git --no-verify` (agent hook uses `scripts/hooks/block-git-no-verify.mjs`)
 
 Foldkit client: `src/client/app.ts` (program) + `src/client/entry.ts` (Runtime boot). `@foldkit/vite-plugin` + `@foldkit/oxlint-plugin` on `src/client/**`.
