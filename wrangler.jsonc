@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "podaj",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-11-04",
+  "observability": {
+    "enabled": true,
+    "traces": { "enabled": true }
+  },
+  "assets": {
+    "directory": "dist/client",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "HANDOFFS",
+      "id": "REPLACE_AFTER_kv_namespace_create"
+    }
+  ],
+  "vars": {
+    "MAX_HANDOFF_BYTES": "32768"
+  }
+}

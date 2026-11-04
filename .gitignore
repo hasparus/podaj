@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+*.pem
+private.pem
+.env
+.env.*
+public/environments.json

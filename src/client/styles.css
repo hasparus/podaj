@@ -1,0 +1,194 @@
+:root {
+  color-scheme: dark;
+  --bg: #0d1117;
+  --panel: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --accent: #388bfd;
+  --accent-hover: #4493ff;
+  --danger: #f85149;
+  --sidebar-w: 240px;
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.layout {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: var(--sidebar-w);
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  background: var(--panel);
+  padding: 1rem 0;
+}
+
+.sidebar h1 {
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 0 1rem 0.75rem;
+}
+
+.env-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.env-list button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.5rem 1rem;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+}
+
+.env-list button[aria-current="true"] {
+  background: rgba(56, 139, 253, 0.12);
+  border-left-color: var(--accent);
+}
+
+.main {
+  flex: 1;
+  padding: 2rem 2.5rem;
+  max-width: 640px;
+}
+
+.main h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.lead {
+  color: var(--muted);
+  margin: 0 0 1.5rem;
+  line-height: 1.5;
+  font-size: 0.9375rem;
+}
+
+.field {
+  margin-bottom: 1rem;
+}
+
+.field label {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  margin-bottom: 0.35rem;
+}
+
+.field input {
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.field input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+  border-color: var(--accent);
+}
+
+.actions {
+  margin-top: 1.5rem;
+}
+
+.actions button {
+  width: 100%;
+  padding: 0.65rem 1rem;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.actions button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.footnote {
+  margin-top: 2rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.meta {
+  font-size: 0.8125rem;
+  color: var(--muted);
+  margin-top: 0.25rem;
+}
+
+.status {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  font-size: 0.875rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.status.error {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.status.ok {
+  border-color: #3fb950;
+}
+
+.hidden {
+  display: none;
+}
+
+.file-row {
+  margin-top: 1rem;
+}
+
+.file-row input[type="file"] {
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
