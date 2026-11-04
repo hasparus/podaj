@@ -1,6 +1,6 @@
 # podaj agent notes
 
-Minimal one-shot env-var handoff (Worker + Vite UI). Do not grow MCP, capability layers, or Alchemy unless the owner asks.
+Minimal one-shot env-var handoff (Worker + Vite UI). Deploy with **wrangler** only — no Alchemy. Do not grow MCP or capability layers unless the owner asks.
 
 ## UI (Direction A · Zinc Ledger)
 
