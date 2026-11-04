@@ -7,6 +7,10 @@ const subtle = webcrypto.subtle;
 
 const dir = join(homedir(), ".local", "share", "podaj");
 
+/**
+ * @param {string} label
+ * @param {ArrayBuffer} der
+ */
 const exportPem = (label, der) => {
   const b64 = Buffer.from(der).toString("base64");
   const lines = b64.match(/.{1,64}/g) ?? [];

@@ -8,7 +8,7 @@
     "deploy": "vite build && wrangler deploy",
     "keygen": "node scripts/keygen.mjs",
     "consume-ready": "node scripts/consume-ready.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.scripts.json"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261103.1",
