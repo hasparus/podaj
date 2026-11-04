@@ -7,6 +7,7 @@ Minimal one-shot env-var handoff (Worker + Vite UI). Do not grow MCP, capability
 - Single default public key from `environments.json` (first entry); show sha-256 fingerprint in header — **no environments sidebar**
 - Vercel-adjacent **Key | Value** table, **Add row**, **Encrypt & send**; minimal chrome
 - Env-var handoff only (not vault fields)
+- User-facing copy: plain language only — no PODAJ1/ciphertext jargon in the UI (wire format stays in code/docs)
 
 ## Gate
 

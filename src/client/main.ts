@@ -5,6 +5,7 @@ import {
   type EnvVar,
   type HandoffVariables,
 } from "../crypto/podaj1.js";
+import { userError } from "./userFacing.js";
 
 type Environment = {
   slug: string;
@@ -63,30 +64,32 @@ const toPayload = (drafts: Draft[]): HandoffVariables => ({
     .map((d) => ({ key: d.key.trim(), value: d.value })),
 });
 
-const shellHeader = (fingerprint: string): HTMLElement => {
+const shellHeader = (meta: string): HTMLElement => {
   const header = el("header", "site-header");
   const brand = el("span", "brand");
   brand.textContent = "podaj";
-  const meta = el("span", "key-meta");
-  meta.textContent = fingerprint;
-  mount(header, brand, meta);
+  const metaEl = el("span", "key-meta");
+  metaEl.textContent = meta;
+  mount(header, brand, metaEl);
   return header;
 };
 
 async function renderReceive(root: HTMLElement, id: string): Promise<void> {
   root.replaceChildren();
   const shell = el("div", "shell");
-  const header = shellHeader("One-shot decrypt");
+  const header = shellHeader("One-time link");
   const main = el("main", "main");
   const status = el("div", "status hidden");
   const fileRow = el("div", "file-row hidden");
+  const fileLabel = el("label");
+  fileLabel.textContent = "Key file";
+  fileLabel.title = "Usually ~/.local/share/podaj/private.pem";
   const fileInput = el("input") as HTMLInputElement;
   fileInput.type = "file";
   fileInput.accept = ".pem";
-  fileRow.appendChild(
-    document.createTextNode("Private key (~/.local/share/podaj/private.pem) "),
-  );
-  fileRow.appendChild(fileInput);
+  fileInput.id = "key-file";
+  fileLabel.htmlFor = fileInput.id;
+  mount(fileRow, fileLabel, fileInput);
 
   const table = el("div", "var-table hidden");
   const head = el("div", "var-head");
@@ -108,23 +111,18 @@ async function renderReceive(root: HTMLElement, id: string): Promise<void> {
   try {
     const res = await fetch(`/api/handoffs/${id}`);
     if (res.status === 410) {
-      setStatus(status, "Already consumed or expired.", "error");
+      setStatus(status, "This link was already used or expired.", "error");
       return;
     }
     if (!res.ok) {
-      setStatus(status, `Fetch failed (${res.status}).`, "error");
+      setStatus(status, "Couldn't load this link.", "error");
       return;
     }
     const data = (await res.json()) as { sealed: string };
     sealed = data.sealed;
-    setStatus(
-      status,
-      "Ciphertext loaded (single use). Pick your private key to decrypt.",
-      "ok",
-    );
     fileRow.classList.remove("hidden");
   } catch (e) {
-    setStatus(status, e instanceof Error ? e.message : "Fetch failed", "error");
+    setStatus(status, userError(e), "error");
     return;
   }
 
@@ -145,13 +143,10 @@ async function renderReceive(root: HTMLElement, id: string): Promise<void> {
         body.appendChild(row);
       }
       table.classList.remove("hidden");
-      setStatus(
-        status,
-        "Decrypted locally. Copy what you need — this link cannot be fetched again.",
-        "ok",
-      );
+      setStatus(status, "", "");
+      fileRow.classList.add("hidden");
     } catch (e) {
-      setStatus(status, e instanceof Error ? e.message : "Decrypt failed", "error");
+      setStatus(status, userError(e), "error");
     }
   });
 }
@@ -207,7 +202,7 @@ async function renderSend(root: HTMLElement): Promise<void> {
         d.key = keyInput.value;
       });
       const valInput = el("input") as HTMLInputElement;
-      valInput.placeholder = "secret value";
+      valInput.placeholder = "Value";
       valInput.type = d.revealed ? "text" : "password";
       valInput.value = d.value;
       valInput.autocomplete = "off";
@@ -250,7 +245,7 @@ async function renderSend(root: HTMLElement): Promise<void> {
     setStatus(status, "", "");
     const payload = toPayload(drafts);
     if (payload.vars.length === 0) {
-      setStatus(status, "Add at least one key and value.", "error");
+      setStatus(status, "Add a key and value.", "error");
       sendBtn.disabled = false;
       return;
     }
@@ -266,11 +261,11 @@ async function renderSend(root: HTMLElement): Promise<void> {
         throw new Error(err.error ?? `store failed (${res.status})`);
       }
       const data = (await res.json()) as { url: string };
-      setStatus(status, `One-time link:\n${data.url}`, "ok");
+      setStatus(status, data.url, "ok");
       drafts = drafts.map((d) => ({ ...d, value: "" }));
       renderRows();
     } catch (e) {
-      setStatus(status, e instanceof Error ? e.message : "Failed", "error");
+      setStatus(status, userError(e), "error");
     } finally {
       sendBtn.disabled = false;
     }
@@ -291,6 +286,6 @@ boot().catch((e) => {
   const root = document.getElementById("app");
   if (!root) return;
   const p = el("p", "status error");
-  p.textContent = e instanceof Error ? e.message : "Startup failed";
+  p.textContent = userError(e);
   root.appendChild(p);
 });
