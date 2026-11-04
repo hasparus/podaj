@@ -7,10 +7,12 @@ const API_ERROR_COPY: Record<string, string> = {
   "not ready": "Nothing has been shared to this link yet.",
   "invalid write": "This compose link isn't valid.",
   "already shared": "This link was already filled.",
+  locked: "This podaj has no instance token yet. Set PODAJ_TOKEN, then enter it here.",
+  unauthorized: "That instance token was refused.",
 };
 
 export const HOW_IT_WORKS =
-  "Values are locked in the browser with the recipient's public key before upload. Each link works once. The server keeps only the sealed bundle and never sees plaintext or your private key.";
+  "Values are locked in the browser with the recipient's public key before upload. Each link works once. The database keeps only the sealed bundle. Plaintext and your private key never leave the browser.";
 
 const CRYPTO_JARGON =
   /PODAJ1|podaj version|expected PODAJ1 ciphertext|unsupported podaj version/iu;

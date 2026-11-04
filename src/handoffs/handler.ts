@@ -1,4 +1,5 @@
 import { Effect, Schema } from "effect";
+import { accessFor } from "../access.js";
 import { maxHandoffBytes, sameOrigin } from "../security.js";
 import type { Env } from "../env.js";
 import { HandoffsApiError } from "./errors.js";
@@ -247,6 +248,25 @@ export const handleHandoffsApi = (
 ): Effect.Effect<Response, never> =>
   Effect.gen(function* () {
     const url = new URL(request.url);
+    const access = accessFor(request, env.PODAJ_TOKEN);
+    switch (access) {
+      case "ok": {
+        break;
+      }
+      case "closed": {
+        return new Response("not found", { status: 404 });
+      }
+      case "locked": {
+        return jsonResponse({ error: "locked" }, 503);
+      }
+      case "unauthorized": {
+        return jsonResponse({ error: "unauthorized" }, 401);
+      }
+      default: {
+        const unreachable: never = access;
+        return unreachable;
+      }
+    }
     if (!sameOrigin(request)) {
       return jsonResponse({ error: "origin not allowed" }, 403);
     }

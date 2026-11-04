@@ -10,8 +10,8 @@ Share environment variables once via a link. Senders fill a Key | Value table in
 
 ## Non-goals
 
-Password vault, multi-environment picker, MCP servers, monorepo rat-stack apps (Foldkit/Alchemy/XState).
+Password vault, multi-environment picker, MCP server, a shared public instance. Each operator deploys their own Worker. Agents use `pnpm podaj`.
 
 ## Security story (user-facing)
 
-Values are encrypted in the browser with the recipient public key before upload. Each link works once. The server never sees plaintext or the private key. Details for implementers: [SECURITY.md](./SECURITY.md).
+Values are encrypted in the browser with the recipient public key before upload. Each link works once. The database (Workers KV) stores only the sealed bundle. Plaintext and the private key stay in the browser. Details for implementers: [SECURITY.md](./SECURITY.md).

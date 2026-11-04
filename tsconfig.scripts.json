@@ -11,5 +11,9 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["scripts/keygen.mjs", "scripts/decrypt-handoff.mjs"]
+  "include": [
+    "scripts/keygen.mjs",
+    "scripts/decrypt-handoff.mjs",
+    "scripts/podaj.mjs"
+  ]
 }

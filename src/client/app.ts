@@ -10,6 +10,7 @@ import {
   seal,
   type HandoffVariables,
 } from "../crypto/podaj1.js";
+import { authHeaders, readInstanceToken, writeInstanceToken } from "./instance-token.js";
 import { looksLikeEnvPaste, parseEnvText } from "./parse-env.js";
 import type { AppRoute } from "./parse-route.js";
 import {
@@ -45,6 +46,7 @@ export const ModelSchema = Schema.Struct({
   composeReady: Schema.Boolean,
   fingerprint: Schema.Option(Schema.String),
   handoffId: Schema.Option(Schema.String),
+  instanceToken: Schema.String,
   nextRowId: Schema.Number,
   page: Schema.Literals(["compose", "receive", "send"]),
   writeToken: Schema.Option(Schema.String),
@@ -60,6 +62,7 @@ export const ModelSchema = Schema.Struct({
 export type Model = typeof ModelSchema.Type;
 
 export const Message = defineMessageUnion({
+  ChangedInstanceToken: { token: Schema.String },
   ChangedRowKey: { key: Schema.String, rowId: Schema.String },
   ChangedRowValue: { rowId: Schema.String, value: Schema.String },
   ClickedAdd: {},
@@ -164,7 +167,8 @@ const LoadHandoff = DefineCommand("LoadHandoff", {
   execute: ({ handoffId }) =>
     Effect.gen(function* () {
       const response = yield* Effect.tryPromise({
-        try: () => fetch(`/api/handoffs/${handoffId}`),
+        try: () =>
+          fetch(`/api/handoffs/${handoffId}`, { headers: authHeaders() }),
         catch: (error) => error,
       });
       if (response.status === 410) {
@@ -173,8 +177,12 @@ const LoadHandoff = DefineCommand("LoadHandoff", {
         });
       }
       if (!response.ok) {
+        const err = (yield* Effect.tryPromise({
+          try: () => response.json(),
+          catch: () => ({}),
+        })) as { error?: string };
         return Message.FailedLoadHandoff({
-          text: `Couldn't load this link (${response.status}).`,
+          text: apiHandoffErrorText(err.error, response.status),
         });
       }
       const data = (yield* Effect.tryPromise({
@@ -230,12 +238,12 @@ const ShareHandoff = DefineCommand("ShareHandoff", {
           useReserved
             ? fetch(`/api/handoffs/${slotId}`, {
                 body: JSON.stringify({ sealed, writeToken: token }),
-                headers: { "Content-Type": "application/json" },
+                headers: authHeaders({ "Content-Type": "application/json" }),
                 method: "PUT",
               })
             : fetch("/api/handoffs", {
                 body: JSON.stringify({ sealed }),
-                headers: { "Content-Type": "application/json" },
+                headers: authHeaders({ "Content-Type": "application/json" }),
                 method: "POST",
               }),
         catch: (error) => error,
@@ -310,6 +318,7 @@ const emptySendModel = (): Model => ({
   composeReady: false,
   fingerprint: Option.none(),
   handoffId: Option.none(),
+  instanceToken: readInstanceToken(),
   nextRowId: 2,
   page: "send",
   publicKeyPem: Option.none(),
@@ -413,6 +422,24 @@ export const init = (
 
 export const update = (model: Model, message: Message) =>
   Message.match<Update.Return<Model, Message>>(message, {
+    ChangedInstanceToken: ({ token }) => {
+      writeInstanceToken(token);
+      const next = modifyFields(model, { instanceToken: () => token });
+      if (token.length === 0) {
+        return { model: next };
+      }
+      if (model.page === "receive" && Option.isNone(model.sealed)) {
+        const handoffId = Option.getOrNull(model.handoffId);
+        if (handoffId === null) {
+          return { model: next };
+        }
+        return {
+          commands: [LoadHandoff({ handoffId })],
+          model: modifyFields(next, { status: () => hiddenStatus() }),
+        };
+      }
+      return { model: next };
+    },
     ChangedRowKey: ({ key, rowId }) =>
       afterComposeEdit(
         modifyFields(model, {
@@ -606,7 +633,20 @@ const siteHeader = (model: Model, h: HtmlBuilder<Message>): Html => {
   });
   return h.header(
     [h.Class("site-header")],
-    [h.span([h.Class("brand")], ["podaj"]), ...(meta === null ? [] : [meta])],
+    [
+      h.span([h.Class("brand")], ["podaj"]),
+      h.input([
+        h.Class("token-input"),
+        h.Type("password"),
+        h.Placeholder("Instance token"),
+        h.Title("PODAJ_TOKEN for this deployment"),
+        h.Value(model.instanceToken),
+        h.Autocomplete("off"),
+        h.Spellcheck(false),
+        h.OnInput((token) => Message.ChangedInstanceToken({ token })),
+      ]),
+      ...(meta === null ? [] : [meta]),
+    ],
   );
 };
 

@@ -38,7 +38,7 @@ Teardown is [Cleanup](#cleanup).
 
 Read-only; it creates no handoffs. Checks: wrangler pid alive; the listening port belongs to our process group; `GET /` is 200; CSP on the Worker path `/h/<random>`; served `/recipient.pem` equals this run's throwaway key; `GET /api/handoffs/<random never-issued id>` is `410` (KV binding works); cross-origin `POST /api/handoffs` is `403`; the build's git rev equals the checkout's current rev (else relaunch, because the dist is stale).
 
-`WARN no CSP on /` is expected under wrangler dev today: exact asset hits (`/`, `/recipient.pem`, `/assets/*`) are served by the assets layer without running `src/worker.ts`. Production does send CSP on `/` (check with `curl -sI https://podaj.hasparus.workers.dev/`). Treat it as a finding to raise, not a reason to stop driving.
+`run_worker_first` is on, so `/` goes through the Worker and should send CSP. Do not request `https://podaj.hasparus.workers.dev` — that host is closed.
 
 ## Drive
 
@@ -85,7 +85,7 @@ Foldkit renders on the next frame. After any click, wait on the DOM you expect (
 
 API-only checks (no browser): `curl -s -o /dev/null -w '%{http_code}' "$URL/api/handoffs/<id>"`. Never GET a live handoff id with curl before the UI opens it, because that read consumes it.
 
-Do not drive https://podaj.hasparus.workers.dev for proofs: its `/recipient.pem` is the owner's real key (you can't decrypt) and every receive consumes a real KV entry. Read-only `curl -sI` against prod is fine for comparing headers.
+Do not drive `https://podaj.hasparus.workers.dev`. That deployment is closed on purpose. Proofs stay on the local wrangler from `launch.sh`.
 
 ## Evidence
 

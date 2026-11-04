@@ -24,6 +24,6 @@ export const notifyHandoffReady = async (
       }),
     );
   } catch {
-    // WebSocket notify is optional; status polling remains the fallback.
+    // If nobody is listening, the agent falls back to status only after the socket fails.
   }
 };

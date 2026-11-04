@@ -3,4 +3,5 @@ export interface Env {
   HANDOFF_PARTY: DurableObjectNamespace;
   ASSETS: Fetcher;
   MAX_HANDOFF_BYTES: string;
+  PODAJ_TOKEN?: string;
 }

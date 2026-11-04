@@ -1,6 +1,10 @@
 # podaj agent notes
 
-Minimal one-shot env-var handoff (Worker + Vite UI). Deploy with **wrangler** only — no Alchemy. Do not grow MCP or capability layers unless the owner asks.
+Minimal one-shot env-var handoff (Worker + Vite UI). Deploy with **wrangler** only — no Alchemy. Do not grow an MCP server unless the owner asks.
+
+People deploy their own Worker (README Deploy to Cloudflare button, or `.github/workflows/deploy.yml` on a clone). Do not point agents at `podaj.hasparus.workers.dev` — that host is closed. Off localhost, API and PartyServer require `PODAJ_TOKEN`.
+
+Agent CLI: `pnpm podaj reserve|wait|decrypt|keygen` (`PODAJ_URL`, `PODAJ_TOKEN`). `wait` stays on the handoff WebSocket and polls only if the socket fails.
 
 ## UI (Direction A · Zinc Ledger)
 

@@ -22,9 +22,41 @@ const mockEnv = (store: Map<string, string>): Env => ({
     },
   } as KVNamespace,
   MAX_HANDOFF_BYTES: "32768",
+  PODAJ_TOKEN: "test-token",
 });
 
+const authed = (url: string): Request =>
+  new Request(url, { headers: { Authorization: "Bearer test-token" } });
+
 describe("handoff status API", () => {
+  it("locks a public host with no instance token", async () => {
+    const env = mockEnv(new Map());
+    env.PODAJ_TOKEN = undefined;
+    const response = await Effect.runPromise(
+      handleHandoffsApi(
+        new Request("https://podaj.test/api/handoffs/reserve", {
+          method: "POST",
+        }),
+        env,
+      ),
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "locked" });
+  });
+
+  it("refuses the wrong instance token", async () => {
+    const response = await Effect.runPromise(
+      handleHandoffsApi(
+        new Request("https://podaj.test/api/handoffs/reserve", {
+          headers: { Authorization: "Bearer nope" },
+          method: "POST",
+        }),
+        mockEnv(new Map()),
+      ),
+    );
+    expect(response.status).toBe(401);
+  });
+
   it("reports pending then ready", async () => {
     const store = new Map<string, string>();
     const id = "0123456789abcdef0123456789abcdef";
@@ -32,7 +64,7 @@ describe("handoff status API", () => {
 
     const pending = await Effect.runPromise(
       handleHandoffsApi(
-        new Request(`https://podaj.test/api/handoffs/${id}/status`),
+        authed(`https://podaj.test/api/handoffs/${id}/status`),
         mockEnv(store),
       ),
     );
@@ -43,7 +75,7 @@ describe("handoff status API", () => {
 
     const ready = await Effect.runPromise(
       handleHandoffsApi(
-        new Request(`https://podaj.test/api/handoffs/${id}/status`),
+        authed(`https://podaj.test/api/handoffs/${id}/status`),
         mockEnv(store),
       ),
     );
