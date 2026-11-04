@@ -10,7 +10,13 @@ import {
   seal,
   type HandoffVariables,
 } from "../crypto/podaj1.js";
-import { HOW_IT_WORKS, userError } from "./user-facing.js";
+import {
+  apiHandoffErrorText,
+  causeMessage,
+  HOW_IT_WORKS,
+  statusError,
+  userStatusText,
+} from "./user-facing.js";
 
 const RECIPIENT_SLUG = "default";
 
@@ -55,10 +61,10 @@ export const Message = defineMessageUnion({
   ClickedCreateLink: {},
   ClickedRemoveRow: { rowId: Schema.String },
   ClickedToggleReveal: { rowId: Schema.String },
-  FailedCreateLink: { reason: Schema.String },
-  FailedDecrypt: { reason: Schema.String },
-  FailedLoadHandoff: { reason: Schema.String },
-  FailedLoadRecipient: { reason: Schema.String },
+  FailedCreateLink: { text: Schema.String },
+  FailedDecrypt: { text: Schema.String },
+  FailedLoadHandoff: { text: Schema.String },
+  FailedLoadRecipient: { text: Schema.String },
   SelectedKeyFile: { file: Schema.instanceOf(File) },
   SucceededCreateLink: { url: Schema.String },
   SucceededDecrypt: { vars: Schema.Array(EnvVarRow) },
@@ -96,7 +102,7 @@ const LoadRecipientKey = DefineCommand("LoadRecipientKey", {
     });
     if (!response.ok) {
       return Message.FailedLoadRecipient({
-        reason: "could not load recipient.pem",
+        text: `This site isn't set up yet (${response.status}).`,
       });
     }
     const text = yield* Effect.tryPromise({
@@ -106,7 +112,7 @@ const LoadRecipientKey = DefineCommand("LoadRecipientKey", {
     const pem = text.trim();
     if (!pem.includes("BEGIN PUBLIC KEY")) {
       return Message.FailedLoadRecipient({
-        reason: "recipient.pem needs a public key",
+        text: "No recipient key is configured yet.",
       });
     }
     const fingerprint = yield* Effect.tryPromise({
@@ -118,7 +124,7 @@ const LoadRecipientKey = DefineCommand("LoadRecipientKey", {
     Effect.catch((error) =>
       Effect.succeed(
         Message.FailedLoadRecipient({
-          reason: error instanceof Error ? error.message : "load failed",
+          text: userStatusText(causeMessage(error)),
         }),
       ),
     ),
@@ -137,25 +143,29 @@ const LoadHandoff = DefineCommand("LoadHandoff", {
       });
       if (response.status === 410) {
         return Message.FailedLoadHandoff({
-          reason: "gone",
+          text: "This link was already used or expired.",
         });
       }
       if (!response.ok) {
-        return Message.FailedLoadHandoff({ reason: "fetch failed" });
+        return Message.FailedLoadHandoff({
+          text: `Couldn't load this link (${response.status}).`,
+        });
       }
       const data = (yield* Effect.tryPromise({
         try: () => response.json(),
         catch: (error) => error,
       })) as { sealed?: unknown };
       if (typeof data.sealed !== "string") {
-        return Message.FailedLoadHandoff({ reason: "fetch failed" });
+        return Message.FailedLoadHandoff({
+          text: "Couldn't load this link (invalid response).",
+        });
       }
       return Message.SucceededLoadHandoff({ sealed: data.sealed });
     }).pipe(
       Effect.catch((error) =>
         Effect.succeed(
           Message.FailedLoadHandoff({
-            reason: error instanceof Error ? error.message : "fetch failed",
+            text: userStatusText(causeMessage(error)),
           }),
         ),
       ),
@@ -173,7 +183,7 @@ const CreateLink = DefineCommand("CreateLink", {
     Effect.gen(function* () {
       const payload = toPayload(rows);
       if (payload.vars.length === 0) {
-        return Message.FailedCreateLink({ reason: "empty payload" });
+        return Message.FailedCreateLink({ text: "Add a key and value." });
       }
       const sealed = yield* Effect.tryPromise({
         try: () => seal(payload, publicKeyPem, RECIPIENT_SLUG),
@@ -193,21 +203,25 @@ const CreateLink = DefineCommand("CreateLink", {
           try: () => response.json(),
           catch: () => ({}),
         })) as { error?: string };
-        throw new Error(err.error ?? `store failed (${response.status})`);
+        return Message.FailedCreateLink({
+          text: apiHandoffErrorText(err.error, response.status),
+        });
       }
       const data = (yield* Effect.tryPromise({
         try: () => response.json(),
         catch: (error) => error,
       })) as { url?: unknown };
       if (typeof data.url !== "string") {
-        throw new Error("store failed");
+        return Message.FailedCreateLink({
+          text: "Couldn't send (invalid response).",
+        });
       }
       return Message.SucceededCreateLink({ url: data.url });
     }).pipe(
       Effect.catch((error) =>
         Effect.succeed(
           Message.FailedCreateLink({
-            reason: error instanceof Error ? error.message : "failed",
+            text: userStatusText(causeMessage(error)),
           }),
         ),
       ),
@@ -233,16 +247,11 @@ const DecryptHandoff = DefineCommand("DecryptHandoff", {
       Effect.catch((error) =>
         Effect.succeed(
           Message.FailedDecrypt({
-            reason: error instanceof Error ? error.message : "decrypt failed",
+            text: userStatusText(causeMessage(error)),
           }),
         ),
       ),
     ),
-});
-
-const statusFromError = (reason: string): typeof Status.Type => ({
-  _tag: "Error",
-  text: userError(new Error(reason)),
 });
 
 export const init = (
@@ -317,7 +326,8 @@ export const update = (model: Model, message: Message) =>
       if (pem === null) {
         return {
           model: modifyFields(model, {
-            status: () => statusFromError("No recipient key is configured yet."),
+            status: () =>
+              statusError("No recipient key is configured yet."),
           }),
         };
       }
@@ -350,36 +360,25 @@ export const update = (model: Model, message: Message) =>
           ),
       }),
     }),
-    FailedCreateLink: ({ reason }) => ({
+    FailedCreateLink: ({ text }) => ({
       model: modifyFields(model, {
         sending: () => false,
-        status: () =>
-          reason === "empty payload"
-            ? { _tag: "Error", text: "Add a key and value." }
-            : statusFromError(reason),
+        status: () => statusError(text),
       }),
     }),
-    FailedDecrypt: ({ reason }) => ({
+    FailedDecrypt: ({ text }) => ({
       model: modifyFields(model, {
-        status: () => statusFromError(reason),
+        status: () => statusError(text),
       }),
     }),
-    FailedLoadHandoff: ({ reason }) => {
-      let text = userError(new Error(reason));
-      if (reason === "gone") {
-        text = "This link was already used or expired.";
-      } else if (reason === "fetch failed") {
-        text = "Couldn't load this link.";
-      }
-      return {
-        model: modifyFields(model, {
-          status: () => ({ _tag: "Error", text }),
-        }),
-      };
-    },
-    FailedLoadRecipient: ({ reason }) => ({
+    FailedLoadHandoff: ({ text }) => ({
       model: modifyFields(model, {
-        status: () => statusFromError(reason),
+        status: () => statusError(text),
+      }),
+    }),
+    FailedLoadRecipient: ({ text }) => ({
+      model: modifyFields(model, {
+        status: () => statusError(text),
       }),
     }),
     SelectedKeyFile: ({ file }) => {
