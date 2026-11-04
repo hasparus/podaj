@@ -1,8 +1,6 @@
 # podaj
 
-One-shot encrypted handoffs for **environment variables** (KEY + secret value) to your remote agents.
-
-Encrypt in the browser with an environment public key (`PODAJ1.` only), store ciphertext once in Cloudflare KV, share the link, decrypt locally with the matching private key.
+Share environment variables once via a link. You add keys and values in the browser; the recipient opens the link with their key file and copies what they need.
 
 Live: **https://podaj.hasparus.workers.dev**
 
@@ -37,13 +35,13 @@ KV binding `HANDOFFS` uses namespace `podaj-handoffs` (`87bb68bfae9148e2ae1a5d67
 
 ## Usage
 
-1. Configure the default public key in `public/environments.json` (first entry; fingerprint shown in the header).
-2. Add **Key | Value** rows → **Encrypt & send**.
-3. Share the one-time `/h/{id}` link.
-4. Recipient opens the link, selects `private.pem`, sees decrypted vars (or `pnpm decrypt` on the PODAJ1 blob).
+1. Put the recipient public key in `public/environments.json` (first entry). The header shows a short id for that key.
+2. Add rows, then **Create link**.
+3. Share the URL. It works once.
+4. Recipient opens the link, chooses **Key file**, reads the table. CLI: `pnpm decrypt` on the saved blob if you use scripts.
 
 ## What we cut
 
 No password vault, auth profiles, MCP/CLI surfaces, or rat-stack monorepo theater — only this handoff, wrangler, vite client, and a minimal fence (`tsrs --lint`, lefthook, hook-bypass block).
 
-See [SECURITY.md](./SECURITY.md).
+See [SECURITY.md](./SECURITY.md) and [AGENTS.md](./AGENTS.md) for wire format and invariants.

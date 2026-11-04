@@ -64,20 +64,24 @@ const toPayload = (drafts: Draft[]): HandoffVariables => ({
     .map((d) => ({ key: d.key.trim(), value: d.value })),
 });
 
-const shellHeader = (meta: string): HTMLElement => {
+const shellHeader = (meta?: string): HTMLElement => {
   const header = el("header", "site-header");
   const brand = el("span", "brand");
   brand.textContent = "podaj";
-  const metaEl = el("span", "key-meta");
-  metaEl.textContent = meta;
-  mount(header, brand, metaEl);
+  if (meta) {
+    const metaEl = el("span", "key-meta");
+    metaEl.textContent = meta;
+    mount(header, brand, metaEl);
+  } else {
+    header.appendChild(brand);
+  }
   return header;
 };
 
 async function renderReceive(root: HTMLElement, id: string): Promise<void> {
   root.replaceChildren();
   const shell = el("div", "shell");
-  const header = shellHeader("One-time link");
+  const header = shellHeader();
   const main = el("main", "main");
   const status = el("div", "status hidden");
   const fileRow = el("div", "file-row hidden");
@@ -161,14 +165,14 @@ async function renderSend(root: HTMLElement): Promise<void> {
 
   root.replaceChildren();
   const shell = el("div", "shell");
-  const header = shellHeader(`sha256 ${fingerprint}`);
+  const header = shellHeader(fingerprint);
   const main = el("main", "main");
 
   const toolbar = el("div", "toolbar");
   const addBtn = el("button", "btn");
-  addBtn.textContent = "Add row";
+  addBtn.textContent = "Add";
   const sendBtn = el("button", "btn btn-primary");
-  sendBtn.textContent = "Encrypt & send";
+  sendBtn.textContent = "Create link";
   mount(toolbar, addBtn, sendBtn);
 
   const table = el("div", "var-table");
@@ -261,7 +265,7 @@ async function renderSend(root: HTMLElement): Promise<void> {
         throw new Error(err.error ?? `store failed (${res.status})`);
       }
       const data = (await res.json()) as { url: string };
-      setStatus(status, data.url, "ok");
+      setStatus(status, `Share this once.\n${data.url}`, "ok");
       drafts = drafts.map((d) => ({ ...d, value: "" }));
       renderRows();
     } catch (e) {
