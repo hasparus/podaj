@@ -69,9 +69,9 @@ pnpm podaj decrypt                       # PODAJ1 blob on stdin, private key on 
 
 1. Put the recipient public key in `public/recipient.pem`. The header shows a short id for that key.
 2. Enter the instance token if this is not localhost.
-3. Add rows (or paste a `.env`), then **Share**.
+3. Add rows (or paste a `.env`), then **create link**.
 4. Send the recipient URL. It works once.
-5. Recipient opens the link, chooses **Key file**, reads the table.
+5. Recipient opens the link, chooses **key file**, reads the table.
 
 ## What we cut
 

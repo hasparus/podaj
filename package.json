@@ -41,6 +41,7 @@
     "@fontsource/commit-mono": "^5.3.0",
     "effect": "4.1.2",
     "foldkit": "0.170.0",
-    "partyserver": "^0.5.10"
+    "partyserver": "^0.5.10",
+    "pixelarticons": "2.4.2"
   }
 }

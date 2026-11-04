@@ -9,7 +9,9 @@ Agent CLI: `pnpm podaj reserve|wait|decrypt|keygen` (`PODAJ_URL`, `PODAJ_TOKEN`)
 ## UI (Direction A · Zinc Ledger)
 
 - Single recipient public key at `public/recipient.pem` (copy from `recipient.pem.example`); optional short hex in header — **no environments list or sidebar**
-- Vercel-adjacent **Key | Value** table, **Add**, **Share**; optional agent **reserve** flow (`/s/:id#writeToken` → fill → Share); success copy `Share this once.` + recipient URL
+- Dense lowercase chrome: `key` | `value`, `add`, `create link`, `key file`; success copy `share this once.` + recipient URL. See `design.md`
+- Row icons from `pixelarticons` (`eye` / `eye-off` / `trash`), `aria-label` `show` / `hide` / `remove`. Show and hide only when the value is non-empty
+- Optional agent **reserve** flow (`/s/:id#writeToken` → fill → autosave)
 - Footer on send/receive: plain-language security (see `HOW_IT_WORKS` in `src/client/user-facing.ts`)
 - Env-var handoff only (not vault fields)
 - User-facing copy: plain language only — wire format (`PODAJ1.`) stays in code/docs for implementers

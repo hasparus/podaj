@@ -10,6 +10,7 @@ import {
   seal,
   type HandoffVariables,
 } from "../crypto/podaj1.js";
+import { eyeOffPaths, eyePaths, trashPaths } from "./icons.js";
 import { authHeaders, readInstanceToken, writeInstanceToken } from "./instance-token.js";
 import { looksLikeEnvPaste, parseEnvText } from "./parse-env.js";
 import type { AppRoute } from "./parse-route.js";
@@ -586,7 +587,7 @@ export const update = (model: Model, message: Message) =>
       const statusText =
         model.page === "compose"
           ? "Ready."
-          : `Share this once.\n${url}`;
+          : `share this once.\n${url}`;
       return {
         model: modifyFields(model, {
           composeReady: () => model.page === "compose",
@@ -626,6 +627,21 @@ export const update = (model: Model, message: Message) =>
     SkippedFilePick: () => ({ model }),
   });
 
+const pixelIcon = (
+  h: HtmlBuilder<Message>,
+  paths: readonly string[],
+): Html =>
+  h.svg(
+    [
+      h.Class("pixel-icon"),
+      h.ViewBox("0 0 24 24"),
+      h.Width("16"),
+      h.Height("16"),
+      h.AriaHidden(true),
+    ],
+    paths.map((d) => h.path([h.Fill("currentColor"), h.D(d)])),
+  );
+
 const siteHeader = (model: Model, h: HtmlBuilder<Message>): Html => {
   const meta = Option.match(model.fingerprint, {
     onNone: () => null,
@@ -638,8 +654,8 @@ const siteHeader = (model: Model, h: HtmlBuilder<Message>): Html => {
       h.input([
         h.Class("token-input"),
         h.Type("password"),
-        h.Placeholder("Instance token"),
-        h.Title("PODAJ_TOKEN for this deployment"),
+        h.Placeholder("instance token"),
+        h.Title("instance token for this deployment"),
         h.Value(model.instanceToken),
         h.Autocomplete("off"),
         h.Spellcheck(false),
@@ -685,7 +701,7 @@ const sendView = (model: Model, h: HtmlBuilder<Message>): Html => {
         ]),
         h.input([
           h.Type(row.revealed ? "text" : "password"),
-          h.Placeholder("Value"),
+          h.Placeholder("value"),
           h.Value(row.value),
           h.OnInput((value) =>
             Message.ChangedRowValue({ rowId: row.id, value }),
@@ -696,22 +712,28 @@ const sendView = (model: Model, h: HtmlBuilder<Message>): Html => {
         h.div(
           [h.Class("row-actions")],
           [
+            ...(row.value.length > 0
+              ? [
+                  h.button(
+                    [
+                      h.Class("icon-btn"),
+                      h.Type("button"),
+                      h.AriaLabel(row.revealed ? "hide" : "show"),
+                      h.OnClick(Message.ClickedToggleReveal({ rowId: row.id })),
+                    ],
+                    [pixelIcon(h, row.revealed ? eyeOffPaths : eyePaths)],
+                  ),
+                ]
+              : []),
             h.button(
               [
                 h.Class("icon-btn"),
                 h.Type("button"),
-                h.OnClick(Message.ClickedToggleReveal({ rowId: row.id })),
-              ],
-              [row.revealed ? "Hide" : "Show"],
-            ),
-            h.button(
-              [
-                h.Class("icon-btn"),
-                h.Type("button"),
+                h.AriaLabel("remove"),
                 h.Disabled(model.rows.length <= 1),
                 h.OnClick(Message.ClickedRemoveRow({ rowId: row.id })),
               ],
-              ["Remove"],
+              [pixelIcon(h, trashPaths)],
             ),
           ],
         ),
@@ -747,7 +769,7 @@ const sendView = (model: Model, h: HtmlBuilder<Message>): Html => {
             h.Disabled(model.sending),
             h.OnClick(Message.ClickedShare()),
           ],
-          ["Share"],
+          ["create link"],
         )
       : null;
 
@@ -777,8 +799,8 @@ const sendView = (model: Model, h: HtmlBuilder<Message>): Html => {
           h.div(
             [h.Class("var-head")],
             [
-              h.span([], ["Key"]),
-              h.span([], ["Value"]),
+              h.span([], ["key"]),
+              h.span([], ["value"]),
               h.span([], [""]),
             ],
           ),
@@ -790,7 +812,7 @@ const sendView = (model: Model, h: HtmlBuilder<Message>): Html => {
         [
           h.button(
             [h.Class("btn"), h.Type("button"), h.OnClick(Message.ClickedAdd())],
-            ["Add"],
+            ["add"],
           ),
           ...(shareButton === null ? [] : [shareButton]),
         ],
@@ -808,7 +830,7 @@ const receiveView = (model: Model, h: HtmlBuilder<Message>): Html => {
           [
             h.label(
               [h.Title("Usually ~/.local/share/podaj/private.pem")],
-              ["Key file"],
+              ["key file"],
             ),
             h.input([
               h.Type("file"),
@@ -831,8 +853,8 @@ const receiveView = (model: Model, h: HtmlBuilder<Message>): Html => {
           h.div(
             [h.Class("var-head")],
             [
-              h.span([], ["Key"]),
-              h.span([], ["Value"]),
+              h.span([], ["key"]),
+              h.span([], ["value"]),
               h.span([], [""]),
             ],
           ),

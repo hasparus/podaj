@@ -4,7 +4,7 @@ A link works exactly once; every later open says so and offers nothing to decryp
 
 ## Sub-features
 
-- UI: a second open of `/h/<id>` shows `.status.error` `This link was already used or expired.` and no **Key file** picker.
+- UI: a second open of `/h/<id>` shows `.status.error` `This link was already used or expired.` and no **key file** picker.
 - API: `GET /api/handoffs/<id>` returns `410 {"error":"gone"}` after the first read. The same applies to ids that were never issued and to entries past their 24h `expirationTtl`.
 - Malformed ids (not 32 lowercase hex) never reach the API route. The SPA treats them as the send page, and the API returns `404 not found`.
 

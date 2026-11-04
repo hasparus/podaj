@@ -1,11 +1,11 @@
 ---
 name: verify-podaj
-description: Launch an isolated local podaj (Vite client + wrangler dev Worker with local KV and throwaway keys), drive the browser UI with agent-browser like a user (Share, open /h/:id, Key file, one-shot gone), and capture screenshots, ARIA snapshots, a video and API status codes as evidence. Use before claiming any podaj UI, Worker or crypto change works, and when a PR needs screenshots or video for review.
+description: Launch an isolated local podaj (Vite client + wrangler dev Worker with local KV and throwaway keys), drive the browser UI with agent-browser like a user (create link, open /h/:id, key file, one-shot gone), and capture screenshots, ARIA snapshots, a video and API status codes as evidence. Use before claiming any podaj UI, Worker or crypto change works, and when a PR needs screenshots or video for review.
 ---
 
 # verify-podaj
 
-podaj is a one-shot env-var handoff: the sender adds `KEY | value` rows and clicks **Share**; the browser seals them with the public key in `/recipient.pem` and POSTs to the Worker (`POST /api/handoffs` -> KV, 24h TTL). Agents can `POST /api/handoffs/reserve` and send `/s/<id>#writeToken` for fill-then-share. The recipient opens `/h/<32 hex>`, picks their private key with **Key file**, and reads the table. `GET /api/handoffs/:id` deletes on read, so the second open returns `410`.
+podaj is a one-shot env-var handoff: the sender adds `key | value` rows and clicks **create link**; the browser seals them with the public key in `/recipient.pem` and POSTs to the Worker (`POST /api/handoffs` -> KV, 24h TTL). Agents can `POST /api/handoffs/reserve` and send `/s/<id>#writeToken` for fill-then-share. The recipient opens `/h/<32 hex>`, picks their private key with **key file**, and reads the table. `GET /api/handoffs/:id` deletes on read, so the second open returns `410`.
 
 Primary surface: the browser SPA (`src/client/app.ts`, Foldkit; entry `src/client/entry.ts`). Secondary: `pnpm keygen` and `pnpm decrypt` (CLI, `scripts/`), and the Worker API (`src/worker.ts`). Feature map: [`features/README.md`](features/README.md).
 
@@ -57,15 +57,15 @@ Hand-driving (same handles the script uses):
 
 ```bash
 AB="/home/box/.local/bin/agent-browser --session $SESSION"
-$AB open "$URL/"; $AB wait --text "Share"
-$AB snapshot -i                                     # textbox "OPENAI_API_KEY", textbox "Value", button Show/Remove/Add/Share
+$AB open "$URL/"; $AB wait --text "create link"
+$AB snapshot -i                                     # textbox "OPENAI_API_KEY", textbox "value", button add/create link; show/remove are aria-labels
 $AB find nth 0 'input[placeholder="OPENAI_API_KEY"]' fill FOO
-$AB find nth 0 'input[placeholder="Value"]' fill bar
-$AB find role button click --name "Add"
+$AB find nth 0 'input[placeholder="value"]' fill bar
+$AB find role button click --name "add"
 $AB wait --fn 'document.querySelectorAll("input[placeholder=OPENAI_API_KEY]").length === 2'
-$AB find role button click --name "Share"
-$AB wait ".status.ok"; $AB get text ".status.ok"    # "Share this once.\nhttp://127.0.0.1:<port>/h/<32 hex>"
-$AB open "$URL/h/<id>"; $AB wait --text "Key file"
+$AB find role button click --name "create link"
+$AB wait ".status.ok"; $AB get text ".status.ok"    # "share this once.\nhttp://127.0.0.1:<port>/h/<32 hex>"
+$AB open "$URL/h/<id>"; $AB wait --text "key file"
 $AB upload "#key-file" "$PRIVATE_PEM"; $AB wait ".var-row-readonly"
 ```
 
@@ -74,11 +74,11 @@ Stable handles, from `src/client/app.ts`:
 | What | Handle |
 | --- | --- |
 | Brand / key id | `.brand` text `podaj` (CSS shows it uppercase); `.key-meta` = first 16 hex of SHA-256 over the recipient SPKI |
-| Send rows | `input[placeholder="OPENAI_API_KEY"]` (key), `input[placeholder="Value"]` (value, `type=password` until Show); index rows with `find nth <i>` |
-| Row buttons | `.row-actions` -> first button `Show`/`Hide`, second `Remove` (disabled when one row) |
-| Toolbar | role button `Add`, role button `Share` |
+| Send rows | `input[placeholder="OPENAI_API_KEY"]` (key), `input[placeholder="value"]` (value, `type=password` until show); index rows with `find nth <i>` |
+| Row buttons | `.row-actions` -> `button[aria-label="show"]` or `hide` only when the value is non-empty; `button[aria-label="remove"]` (disabled when one row) |
+| Toolbar | role button `add`, role button `create link` |
 | Status | `.status.ok` (success) / `.status.error` (message from `src/client/user-facing.ts`) |
-| Receive | `#key-file` (file input; the "Key file" label is not bound to it, so `find label` does not work), `.var-row-readonly > .cell-key / .cell-value` |
+| Receive | `#key-file` (file input; the "key file" label is not bound to it, so `find label` does not work), `.var-row-readonly > .cell-key / .cell-value` |
 | Footer | `.site-footer` = `HOW_IT_WORKS` in `src/client/user-facing.ts` |
 
 Foldkit renders on the next frame. After any click, wait on the DOM you expect (`wait --fn`, `wait <selector>`), never on a fixed sleep or an immediate `get count`.
@@ -95,7 +95,7 @@ Everything lands in `evidence/<RUN_ID>/` inside this skill dir (gitignored by `.
 | --- | --- |
 | `01-send-empty.png` | send page with header key id and footer |
 | `02-send-filled.png`, `.aria.txt` | the action: two rows filled, row 2 revealed |
-| `03-link-created.png`, `.aria.txt`, `03-status.txt`, `handoff-url.txt` | resulting state: `Share this once.` + one-shot URL; values cleared |
+| `03-link-created.png`, `.aria.txt`, `03-status.txt`, `handoff-url.txt` | resulting state: `share this once.` + one-shot URL; values cleared |
 | `04-receive-keyfile.png` | recipient view before the key is picked |
 | `05-receive-values.png`, `.aria.txt`, `05-received.json` | decrypted rows, compared exactly with what was sent |
 | `06-second-open-gone.png`, `.aria.txt`, `06-second-open.txt` | second open shows `This link was already used or expired.` and no picker |
