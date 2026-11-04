@@ -1,3 +1,5 @@
+import "@fontsource/commit-mono/400.css";
+import "@fontsource/commit-mono/500.css";
 import { Runtime } from "foldkit";
 
 import { init, ModelSchema, update, view } from "./app.js";
