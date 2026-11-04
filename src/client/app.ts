@@ -10,6 +10,7 @@ import {
   seal,
   type HandoffVariables,
 } from "../crypto/podaj1.js";
+import { looksLikeEnvPaste, parseEnvText } from "./parse-env.js";
 import {
   apiHandoffErrorText,
   causeMessage,
@@ -61,6 +62,7 @@ export const Message = defineMessageUnion({
   ClickedCreateLink: {},
   ClickedRemoveRow: { rowId: Schema.String },
   ClickedToggleReveal: { rowId: Schema.String },
+  PastedEnv: { text: Schema.String },
   FailedCreateLink: { text: Schema.String },
   FailedDecrypt: { text: Schema.String },
   FailedLoadHandoff: { text: Schema.String },
@@ -92,6 +94,26 @@ const toPayload = (rows: ReadonlyArray<typeof Row.Type>): HandoffVariables => ({
     .filter((d) => d.key.trim().length > 0 && d.value.length > 0)
     .map((d) => ({ key: d.key.trim(), value: d.value })),
 });
+
+const rowsFromEnvVars = (
+  vars: ReadonlyArray<typeof EnvVarRow.Type>,
+  nextRowId: number,
+): { nextRowId: number; rows: Array<typeof Row.Type> } => {
+  if (vars.length === 0) {
+    return { nextRowId, rows: [newRow(nextRowId)] };
+  }
+  const rows = vars.map((v, index) => ({
+    id: String(nextRowId + index),
+    key: v.key,
+    revealed: false,
+    value: v.value,
+  }));
+  const trailingId = nextRowId + vars.length;
+  return {
+    nextRowId: trailingId + 1,
+    rows: [...rows, newRow(trailingId)],
+  };
+};
 
 const LoadRecipientKey = DefineCommand("LoadRecipientKey", {
   messages: [Message.SucceededLoadRecipient, Message.FailedLoadRecipient],
@@ -345,6 +367,25 @@ export const update = (model: Model, message: Message) =>
           rows.length <= 1 ? rows : rows.filter((row) => row.id !== rowId),
       }),
     }),
+    PastedEnv: ({ text }) => {
+      const vars = parseEnvText(text);
+      if (vars.length === 0) {
+        return {
+          model: modifyFields(model, {
+            status: () =>
+              statusError("Couldn't read pasted text as KEY=value lines."),
+          }),
+        };
+      }
+      const { nextRowId, rows } = rowsFromEnvVars(vars, model.nextRowId);
+      return {
+        model: modifyFields(model, {
+          nextRowId: () => nextRowId,
+          rows: () => rows,
+          status: () => hiddenStatus(),
+        }),
+      };
+    },
     ClickedToggleReveal: ({ rowId }) => ({
       model: modifyFields(model, {
         rows: (rows) =>
@@ -451,6 +492,12 @@ const statusView = (model: Model, h: HtmlBuilder<Message>): Html => {
 };
 
 const sendView = (model: Model, h: HtmlBuilder<Message>): Html => {
+  const onEnvPaste = h.OnPastePreventDefault((text) =>
+    looksLikeEnvPaste(text)
+      ? Option.some(Message.PastedEnv({ text }))
+      : Option.none(),
+  );
+
   const tableBody = model.rows.map((row) =>
     h.div(
       [h.Class("var-row"), h.Key(row.id)],
@@ -462,6 +509,7 @@ const sendView = (model: Model, h: HtmlBuilder<Message>): Html => {
           h.OnInput((value) =>
             Message.ChangedRowKey({ key: value, rowId: row.id }),
           ),
+          onEnvPaste,
           h.Autocomplete("off"),
           h.Spellcheck(false),
         ]),
@@ -472,6 +520,7 @@ const sendView = (model: Model, h: HtmlBuilder<Message>): Html => {
           h.OnInput((value) =>
             Message.ChangedRowValue({ rowId: row.id, value }),
           ),
+          onEnvPaste,
           h.Autocomplete("off"),
         ]),
         h.div(
@@ -503,17 +552,24 @@ const sendView = (model: Model, h: HtmlBuilder<Message>): Html => {
   return h.main(
     [h.Class("main")],
     [
-      h.div([h.Class("var-table")], [
-        h.div(
-          [h.Class("var-head")],
-          [
-            h.span([], ["Key"]),
-            h.span([], ["Value"]),
-            h.span([], [""]),
-          ],
-        ),
-        ...tableBody,
-      ]),
+      h.div(
+        [
+          h.Class("var-table"),
+          h.Title("Paste a .env file or KEY=value lines to fill the table"),
+          onEnvPaste,
+        ],
+        [
+          h.div(
+            [h.Class("var-head")],
+            [
+              h.span([], ["Key"]),
+              h.span([], ["Value"]),
+              h.span([], [""]),
+            ],
+          ),
+          ...tableBody,
+        ],
+      ),
       h.div(
         [h.Class("toolbar")],
         [
