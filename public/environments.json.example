@@ -1,8 +1,0 @@
-[
-  {
-    "slug": "default",
-    "name": "Default",
-    "description": "Primary handoff target",
-    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nREPLACE\n-----END PUBLIC KEY-----\n"
-  }
-]

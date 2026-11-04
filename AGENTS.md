@@ -4,19 +4,25 @@ Minimal one-shot env-var handoff (Worker + Vite UI). Do not grow MCP, capability
 
 ## UI (Direction A · Zinc Ledger)
 
-- Single default public key from `environments.json` (first entry); optional short hex in header — **no environments sidebar**
+- Single recipient public key at `public/recipient.pem` (copy from `recipient.pem.example`); optional short hex in header — **no environments list or sidebar**
 - Vercel-adjacent **Key | Value** table, **Add**, **Create link**; minimal chrome; success copy `Share this once.` + URL
+- Footer on send/receive: plain-language security (see `HOW_IT_WORKS` in `src/client/userFacing.ts`)
 - Env-var handoff only (not vault fields)
-- User-facing copy: plain language only — no PODAJ1/ciphertext jargon in the UI (wire format stays in code/docs)
+- User-facing copy: plain language only — wire format (`PODAJ1.`) stays in code/docs for implementers
 
-## Gate
+## Fence (rat-stack subset)
 
-- `pnpm check` — `tsrs` typecheck (app + key scripts) and `oxlint --type-aware`
+Aligned with [rat-stack fence](https://ratstack.sh/systems/fence) for this single package (no monorepo):
+
+- `pnpm check` — `tsrs` typecheck (app + key scripts) and type-aware `oxlint` with **Ultracite core**
 - `pnpm test`
-- Lefthook runs both on commit; do not use `git --no-verify`
+- Lefthook runs both on commit; `scripts/vcs-command-policy.js` blocks `git --no-verify` (agent hook uses `scripts/hooks/block-git-no-verify.mjs`)
+
+Vanilla DOM client: **no Foldkit** until a Foldkit program replaces `src/client/main.ts`. Do not add `@foldkit/oxlint-plugin` rules without Foldkit code.
 
 ## Invariants
 
 - Ciphertext prefix `PODAJ1.` only
 - KV stores ciphertext only; no private keys in git
 - Product is KEY+value env vars, not login credentials
+- Envelope `env` slug is `default` for the single recipient key

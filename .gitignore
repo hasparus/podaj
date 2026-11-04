@@ -6,7 +6,7 @@ dist/
 private.pem
 .env
 .env.*
-public/environments.json
+public/recipient.pem
 .agents/
 skills-lock.json
 .turbo

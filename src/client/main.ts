@@ -5,14 +5,10 @@ import {
   type EnvVar,
   type HandoffVariables,
 } from "../crypto/podaj1.js";
-import { userError } from "./userFacing.js";
+import { HOW_IT_WORKS, userError } from "./user-facing.js";
 
-type Environment = {
-  slug: string;
-  name: string;
-  description?: string;
-  publicKeyPem: string;
-};
+/** Stored in the sealed envelope for implementers; not shown in the UI. */
+const RECIPIENT_SLUG = "default";
 
 type Draft = EnvVar & { id: string; revealed: boolean };
 
@@ -40,15 +36,14 @@ const setStatus = (
   if (!text) node.classList.add("hidden");
 };
 
-const loadDefaultEnvironment = async (): Promise<Environment> => {
-  const res = await fetch("/environments.json");
-  if (!res.ok) throw new Error("could not load environments.json");
-  const envs = (await res.json()) as Environment[];
-  const env = envs[0];
-  if (!env?.publicKeyPem) {
-    throw new Error("environments.json needs a default public key");
+const loadRecipientPublicKey = async (): Promise<string> => {
+  const res = await fetch("/recipient.pem");
+  if (!res.ok) throw new Error("could not load recipient.pem");
+  const pem = (await res.text()).trim();
+  if (!pem.includes("BEGIN PUBLIC KEY")) {
+    throw new Error("recipient.pem needs a public key");
   }
-  return env;
+  return pem;
 };
 
 const handoffId = (): string | null => {
@@ -76,6 +71,12 @@ const shellHeader = (meta?: string): HTMLElement => {
     header.appendChild(brand);
   }
   return header;
+};
+
+const siteFooter = (): HTMLElement => {
+  const footer = el("footer", "site-footer");
+  footer.textContent = HOW_IT_WORKS;
+  return footer;
 };
 
 async function renderReceive(root: HTMLElement, id: string): Promise<void> {
@@ -108,7 +109,7 @@ async function renderReceive(root: HTMLElement, id: string): Promise<void> {
   mount(table, head, body);
 
   mount(main, status, fileRow, table);
-  mount(shell, header, main);
+  mount(shell, header, main, siteFooter());
   root.appendChild(shell);
 
   let sealed: string;
@@ -156,8 +157,8 @@ async function renderReceive(root: HTMLElement, id: string): Promise<void> {
 }
 
 async function renderSend(root: HTMLElement): Promise<void> {
-  const env = await loadDefaultEnvironment();
-  const fingerprint = await publicKeyFingerprint(env.publicKeyPem);
+  const publicKeyPem = await loadRecipientPublicKey();
+  const fingerprint = await publicKeyFingerprint(publicKeyPem);
 
   let drafts: Draft[] = [
     { id: crypto.randomUUID(), key: "", value: "", revealed: false },
@@ -189,7 +190,7 @@ async function renderSend(root: HTMLElement): Promise<void> {
 
   const status = el("div", "status hidden");
   mount(main, table, toolbar, status);
-  mount(shell, header, main);
+  mount(shell, header, main, siteFooter());
   root.appendChild(shell);
 
   const renderRows = () => {
@@ -254,7 +255,7 @@ async function renderSend(root: HTMLElement): Promise<void> {
       return;
     }
     try {
-      const sealed = await seal(payload, env.publicKeyPem, env.slug);
+      const sealed = await seal(payload, publicKeyPem, RECIPIENT_SLUG);
       const res = await fetch("/api/handoffs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
