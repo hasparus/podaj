@@ -1,10 +1,54 @@
+import foldkitRecommended from "@foldkit/oxlint-plugin/recommended.json" with {
+  type: "json",
+};
 import core from "ultracite/oxlint/core";
 import { defineConfig } from "oxlint";
 
-/**
- * rat-stack fence subset for a single-package vanilla-DOM app.
- * Full Ultracite core on `src/`; scripts/tests use tsrs scripts project only.
- */
+const foldkitScope = (pattern: string) => `src/client/${pattern}`;
+
+const foldkitSeverity = ([rule, severity]: readonly [string, string]) => {
+  if (severity === "error" || severity === "off") {
+    return [rule, severity] as const;
+  }
+  throw new Error(
+    `@foldkit/oxlint-plugin/recommended.json sets ${rule} to ${severity}. Map that severity in oxlint.config.ts before bumping the plugin.`,
+  );
+};
+
+const foldkitRules = (rules: Readonly<Record<string, string>>) =>
+  Object.fromEntries(Object.entries(rules).map(foldkitSeverity));
+
+const clientUltraciteRelaxed = {
+  "eslint/func-names": "off",
+  "eslint/no-nested-ternary": "off",
+  "eslint/no-redeclare": "off",
+  "eslint/prefer-destructuring": "off",
+  "eslint/sort-keys": "off",
+  "import/consistent-type-specifier-style": "off",
+  "promise/prefer-await-to-callbacks": "off",
+  "typescript/array-type": "off",
+  "typescript/consistent-type-imports": "off",
+  "typescript/no-unsafe-type-assertion": "off",
+  "typescript/promise-function-async": "off",
+  "unicorn/prefer-type-error": "off",
+};
+
+const foldkitOverrides = [
+  {
+    files: [foldkitScope("**/*.ts")],
+    rules: {
+      ...foldkitRules(foldkitRecommended.rules),
+      ...clientUltraciteRelaxed,
+    },
+  },
+  ...foldkitRecommended.overrides.map(({ excludeFiles, files, rules }) => ({
+    excludeFiles: excludeFiles?.map(foldkitScope),
+    files: files.map(foldkitScope),
+    rules: foldkitRules(rules),
+  })),
+];
+
+/** rat-stack fence subset: Ultracite core + Foldkit lint on the client program. */
 export default defineConfig({
   extends: [core],
   ignorePatterns: [
@@ -16,33 +60,10 @@ export default defineConfig({
     "test/**",
     "vite.config.ts",
   ],
+  jsPlugins: foldkitRecommended.jsPlugins,
   options: { typeAware: true },
   overrides: [
-    {
-      files: ["src/client/**/*.ts"],
-      rules: {
-        "eslint/curly": "off",
-        "eslint/func-style": "off",
-        "eslint/no-loop-func": "off",
-        "eslint/prefer-destructuring": "off",
-        "eslint/prefer-named-capture-group": "off",
-        "eslint/sort-keys": "off",
-        "import/consistent-type-specifier-style": "off",
-        "typescript/no-misused-promises": "off",
-        "typescript/no-unnecessary-type-assertion": "off",
-        "typescript/no-unsafe-type-assertion": "off",
-        "typescript/prefer-regexp-exec": "off",
-        "typescript/promise-function-async": "off",
-        "typescript/strict-boolean-expressions": "off",
-        "typescript/strict-void-return": "off",
-        "typescript/use-unknown-in-catch-callback-variable": "off",
-        "unicorn/catch-error-name": "off",
-        "unicorn/no-await-expression-member": "off",
-        "unicorn/prefer-dom-node-append": "off",
-        "unicorn/prefer-query-selector": "off",
-        "unicorn/prefer-ternary": "off",
-      },
-    },
+    ...foldkitOverrides,
     {
       files: ["src/crypto/**/*.ts", "src/security.ts", "src/worker.ts"],
       rules: {

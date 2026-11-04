@@ -17,15 +17,21 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20251011.0",
-    "oxlint": "1.91.0",
-    "oxlint-tsgolint": "7.0.2005",
+    "@foldkit/oxlint-plugin": "0.15.4",
     "@types/node": "24.19.2",
     "lefthook": "2.2.2",
+    "oxlint": "1.91.0",
+    "oxlint-tsgolint": "7.0.2005",
     "tsrs": "0.21.0-ts7.1.0-beta",
     "typescript": "7.0.2",
-    "vite": "8.3.4",
     "ultracite": "8.1.1",
+    "vite": "8.3.4",
     "vitest": "5.0.5",
     "wrangler": "4.45.0"
+  },
+  "dependencies": {
+    "@foldkit/vite-plugin": "0.29.0",
+    "effect": "4.1.2",
+    "foldkit": "0.170.0"
   }
 }

@@ -6,7 +6,7 @@ Minimal one-shot env-var handoff (Worker + Vite UI). Do not grow MCP, capability
 
 - Single recipient public key at `public/recipient.pem` (copy from `recipient.pem.example`); optional short hex in header — **no environments list or sidebar**
 - Vercel-adjacent **Key | Value** table, **Add**, **Create link**; minimal chrome; success copy `Share this once.` + URL
-- Footer on send/receive: plain-language security (see `HOW_IT_WORKS` in `src/client/userFacing.ts`)
+- Footer on send/receive: plain-language security (see `HOW_IT_WORKS` in `src/client/user-facing.ts`)
 - Env-var handoff only (not vault fields)
 - User-facing copy: plain language only — wire format (`PODAJ1.`) stays in code/docs for implementers
 
@@ -18,7 +18,7 @@ Aligned with [rat-stack fence](https://ratstack.sh/systems/fence) for this singl
 - `pnpm test`
 - Lefthook runs both on commit; `scripts/vcs-command-policy.js` blocks `git --no-verify` (agent hook uses `scripts/hooks/block-git-no-verify.mjs`)
 
-Vanilla DOM client: **no Foldkit** until a Foldkit program replaces `src/client/main.ts`. Do not add `@foldkit/oxlint-plugin` rules without Foldkit code.
+Foldkit client: `src/client/app.ts` (program) + `src/client/entry.ts` (Runtime boot). `@foldkit/vite-plugin` + `@foldkit/oxlint-plugin` on `src/client/**`.
 
 ## Invariants
 
