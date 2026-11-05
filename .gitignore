@@ -1,12 +1,13 @@
 node_modules/
 dist/
+.alchemy/
 .wrangler/
 .dev.vars
 *.pem
 private.pem
 .env
 .env.*
-public/environments.json
+public/recipient.pem
 .agents/
 skills-lock.json
 .turbo

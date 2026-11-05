@@ -1,15 +1,38 @@
 {
   "name": "podaj",
-  "private": true,
+  "version": "0.1.0",
+  "description": "One-shot encrypted env handoff. Deploy your own Worker, then hand variables over a link.",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hasparus/podaj.git"
+  },
+  "bin": {
+    "podaj": "scripts/podaj.mjs"
+  },
+  "files": [
+    "scripts",
+    "src",
+    "dist/client",
+    "wrangler.jsonc",
+    "public/recipient.pem.example",
+    "README.md"
+  ],
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "bun@1.4.4",
   "scripts": {
     "build": "vite build",
-    "check": "pnpm run typecheck && pnpm run lint",
-    "deploy": "pnpm run build && wrangler deploy",
+    "prepack": "vite build && rm -f dist/client/recipient.pem",
+    "check": "bun run typecheck && bun run lint",
+    "deploy": "bun run build && wrangler deploy",
     "dev": "vite build && wrangler dev",
-    "keygen": "node scripts/keygen.mjs",
-    "decrypt": "node scripts/decrypt-handoff.mjs",
-    "lint": "oxlint --type-aware -c oxlint.config.ts",
+    "podaj": "bun scripts/podaj.mjs",
+    "keygen": "bun scripts/podaj.mjs keygen",
+    "decrypt": "bun scripts/podaj.mjs decrypt",
+    "lint": "oxlint -c oxlint.config.ts",
     "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && lefthook install || true",
     "test": "vitest run",
     "typecheck": "tsrs --noEmit -p tsconfig.json && tsrs --noEmit -p tsconfig.scripts.json",
@@ -17,14 +40,29 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20251011.0",
-    "oxlint": "1.88.0",
-    "oxlint-tsgolint": "7.0.2004",
+    "@foldkit/oxlint-plugin": "0.15.4",
     "@types/node": "24.19.2",
+    "@types/ws": "^8.18.2",
+    "@yielded/effect-tsrs": "0.2.3",
     "lefthook": "2.2.2",
+    "oxlint": "1.91.0",
+    "oxlint-tsgolint": "7.0.2005",
+    "partysocket": "^1.3.0",
     "tsrs": "0.21.0-ts7.1.0-beta",
     "typescript": "7.0.2",
+    "ultracite": "8.1.1",
     "vite": "8.3.4",
-    "vitest": "5.0.5",
-    "wrangler": "4.45.0"
+    "vitest": "5.0.5"
+  },
+  "dependencies": {
+    "@clack/prompts": "1.7.0",
+    "@foldkit/vite-plugin": "0.29.0",
+    "@fontsource/commit-mono": "^5.3.0",
+    "effect": "4.1.2",
+    "foldkit": "0.170.0",
+    "partyserver": "^0.5.10",
+    "pixelarticons": "2.4.2",
+    "wrangler": "4.45.0",
+    "ws": "^8.22.1"
   }
 }

@@ -11,5 +11,19 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["scripts/keygen.mjs", "scripts/decrypt-handoff.mjs"]
+  "include": [
+    "scripts/config.mjs",
+    "scripts/decrypt-handoff.mjs",
+    "scripts/deploy-text.mjs",
+    "scripts/init-args.mjs",
+    "scripts/init-flow.mjs",
+    "scripts/instance.mjs",
+    "scripts/keypair.mjs",
+    "scripts/keygen.mjs",
+    "scripts/open-podaj1.mjs",
+    "scripts/podaj.mjs",
+    "scripts/select-vars.mjs",
+    "scripts/stdin-token.mjs",
+    "scripts/stage-worker.mjs"
+  ]
 }

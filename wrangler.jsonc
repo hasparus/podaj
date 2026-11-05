@@ -10,12 +10,27 @@
   "assets": {
     "directory": "dist/client",
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    "run_worker_first": true
   },
   "kv_namespaces": [
     {
       "binding": "HANDOFFS",
-      "id": "87bb68bfae9148e2ae1a5d6781b1e48e"
+      "id": "00000000000000000000000000000000"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "HANDOFF_PARTY",
+        "class_name": "HandoffParty"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-handoff-party",
+      "new_sqlite_classes": ["HandoffParty"]
     }
   ],
   "vars": {
