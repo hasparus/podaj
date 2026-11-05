@@ -83,7 +83,3 @@ podaj decrypt                 # PODAJ1 blob on stdin
 3. Add rows (or paste a `.env`), then **create link**.
 4. Send the recipient URL. It works once.
 5. Recipient opens the link, chooses **key file**, reads the table.
-
-## What we cut
-
-No password vault, auth profiles, or MCP server — only this handoff, a small CLI, wrangler, and a vite client. See [AGENTS.md](./AGENTS.md) and [PRODUCT.md](./PRODUCT.md).
