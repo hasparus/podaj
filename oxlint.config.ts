@@ -64,6 +64,8 @@ export default defineConfig({
   options: { typeAware: true },
   overrides: [
     ...foldkitOverrides,
+    { files: ["src/handoffs/body.ts"], rules: { "eslint/no-await-in-loop": "off" } },
+    { files: ["src/authorize.ts"], rules: { "promise/avoid-new": "off", "unicorn/prefer-dom-node-append": "off" } },
     {
       files: [
         "src/crypto/**/*.ts",

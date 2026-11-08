@@ -1,72 +1,199 @@
-import { Server, type Connection, type ConnectionContext } from "partyserver";
+import { DurableObject } from "cloudflare:workers";
 
-import { isPendingValue, isSealedValue } from "./kv-encoding.js";
+import { securityHeaders } from "../security.js";
+import {
+  CAPABILITY,
+  DEMO_LIMITS,
+  HANDOFF_ID,
+  HANDOFF_SERVICE_NAME,
+  type ReserveInput,
+  type ServiceReply,
+} from "./protocol.js";
+import { HandoffStore, type HandoffStoreConfig } from "./store.js";
 
-export type HandoffPartyEnv = {
-  HANDOFFS: KVNamespace;
+type HandoffPartyEnv = HandoffStoreConfig & {
+  HANDOFF_PARTY: DurableObjectNamespace<HandoffParty>;
+};
+type Subscription = { id: string; expiresAt: number };
+
+const json = (result: ServiceReply): Response => Response.json(result.body, {
+  status: result.status,
+  headers: { ...securityHeaders(), "Cache-Control": "no-store" },
+});
+
+const subscription = (socket: WebSocket): Subscription | null => {
+  const value: unknown = socket.deserializeAttachment();
+  if (typeof value !== "object" || value === null || !("id" in value) || !("expiresAt" in value) ||
+    typeof value.id !== "string" || !HANDOFF_ID.test(value.id) ||
+    typeof value.expiresAt !== "number" || !Number.isFinite(value.expiresAt)) return null;
+  return { id: value.id, expiresAt: value.expiresAt };
 };
 
-type ReadyNotifyBody = {
-  receiveUrl: string;
+const closeSocket = (socket: WebSocket, gone: boolean, code = 1000): boolean => {
+  try {
+    if (gone) socket.send(JSON.stringify({ type: "gone" }));
+    socket.close(code, gone ? "gone" : "closed");
+    return true;
+  } catch {
+    return false;
+  }
 };
 
-export class HandoffParty extends Server<HandoffPartyEnv> {
-  static options = { hibernate: true };
+export class HandoffParty extends DurableObject<HandoffPartyEnv> {
+  private readonly store: HandoffStore;
 
-  async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
-    const stored = await this.env.HANDOFFS.get(this.name);
-    const receiveUrl = new URL(`/h/${this.name}`, ctx.request.url).toString();
-
-    if (stored !== null && isSealedValue(stored)) {
-      connection.send(
-        JSON.stringify({
-          type: "ready",
-          handoffId: this.name,
-          receiveUrl,
-        }),
-      );
-      return;
+  constructor(ctx: DurableObjectState, env: HandoffPartyEnv) {
+    super(ctx, env);
+    if (!ctx.id.equals(env.HANDOFF_PARTY.idFromName(HANDOFF_SERVICE_NAME))) {
+      throw new Error("handoff coordinator requires the fixed service object");
     }
-
-    let status: "pending" | "gone" = "gone";
-    if (stored !== null && isPendingValue(stored)) {
-      status = "pending";
-    }
-
-    connection.send(
-      JSON.stringify({
-        type: "subscribed",
-        handoffId: this.name,
-        status,
-      }),
-    );
+    this.store = new HandoffStore(ctx.storage, env);
   }
 
-  async onRequest(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    if (request.method !== "POST" || !url.pathname.endsWith("/notify")) {
-      return new Response("not found", { status: 404 });
+  private notify(id: string, ready: boolean): void {
+    for (const socket of this.ctx.getWebSockets(id)) {
+      const attached = subscription(socket);
+      if (!ready) {
+        closeSocket(socket, true);
+        continue;
+      }
+      if (attached === null || attached.expiresAt <= Date.now()) {
+        closeSocket(socket, false);
+        continue;
+      }
+      try {
+        socket.send(JSON.stringify({ type: "ready" }));
+      } catch {
+        closeSocket(socket, false);
+      }
     }
+  }
 
-    let body: ReadyNotifyBody;
-    try {
-      body = (await request.json()) as ReadyNotifyBody;
-    } catch {
-      return new Response("bad request", { status: 400 });
+  private async reconcile(): Promise<void> {
+    await this.ctx.blockConcurrencyWhile(async () => {
+      this.store.cleanup();
+      let deadline = this.store.nextExpiry();
+      const now = Date.now();
+      for (const socket of this.ctx.getWebSockets()) {
+        const attached = subscription(socket);
+        const activeExpiry = attached === null ? null : this.store.activeExpiry(attached.id);
+        if (attached === null) {
+          closeSocket(socket, false, 1008);
+          continue;
+        }
+        if (activeExpiry === null) {
+          closeSocket(socket, true);
+          continue;
+        }
+        if (attached.expiresAt <= now) {
+          closeSocket(socket, false);
+          continue;
+        }
+        const expiresAt = Math.min(activeExpiry, attached.expiresAt);
+        if (expiresAt !== attached.expiresAt) socket.serializeAttachment({ id: attached.id, expiresAt } satisfies Subscription);
+        deadline = Math.min(deadline ?? expiresAt, expiresAt);
+      }
+      const current = await this.ctx.storage.getAlarm();
+      const target = deadline === null ? null : Math.max(now + 1, deadline);
+      if (current !== target) {
+        await (target === null ? this.ctx.storage.deleteAlarm() : this.ctx.storage.setAlarm(target));
+      }
+    });
+  }
+
+  async reserve(input: ReserveInput): Promise<ServiceReply> {
+    const result = this.store.reserve(input);
+    await this.reconcile();
+    return result;
+  }
+
+  authorizeWrite(id: string, writeHash: string): Promise<ServiceReply> {
+    return Promise.resolve(this.store.authorizeWrite(id, writeHash));
+  }
+
+  async fill(id: string, writeHash: string, sealed: string): Promise<ServiceReply> {
+    const result = this.store.fill(id, writeHash, sealed);
+    if (result.status === 200) this.notify(id, true);
+    await this.reconcile();
+    return result;
+  }
+
+  async consume(id: string, readHash: string): Promise<ServiceReply> {
+    const result = this.store.consume(id, readHash);
+    if (result.status === 200) this.notify(id, false);
+    await this.reconcile();
+    return result;
+  }
+
+  async status(id: string, subscribeHash: string): Promise<ServiceReply> {
+    const result = this.store.status(id, subscribeHash);
+    await this.reconcile();
+    return result;
+  }
+
+  async approvalAttempt(ipHash: string): Promise<ServiceReply> {
+    const result = this.store.approvalAttempt(ipHash);
+    await this.reconcile();
+    return result;
+  }
+
+  async approveCredential(challenge: string, fingerprint: string): Promise<ServiceReply> {
+    const result = this.store.approveCredential(challenge, fingerprint);
+    await this.reconcile();
+    return result;
+  }
+
+  async credentialStatus(challenge: string): Promise<ServiceReply> {
+    const result = this.store.credentialStatus(challenge);
+    await this.reconcile();
+    return result;
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const match = /^\/parties\/handoff-party\/([a-f0-9]{32})$/u.exec(new URL(request.url).pathname);
+    if (!match || request.method !== "GET") return json({ status: 404, body: { error: "not found" } });
+    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+      return json({ status: 426, body: { error: "websocket required" } });
     }
-
-    if (typeof body.receiveUrl !== "string" || body.receiveUrl.length === 0) {
-      return new Response("bad request", { status: 400 });
+    const token = /^Bearer ([a-f0-9]{64})$/iu.exec(request.headers.get("Authorization") ?? "")?.[1];
+    if (token === undefined || !CAPABILITY.test(token)) return json({ status: 401, body: { error: "unauthorized" } });
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+    const subscribeHash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const id = match[1];
+    const result = this.store.status(id, subscribeHash);
+    if (result.status !== 200) return json(result);
+    if (this.ctx.getWebSockets().length >= DEMO_LIMITS.sockets ||
+      this.ctx.getWebSockets(id).length >= DEMO_LIMITS.socketsPerHandoff) {
+      return json({ status: 429, body: { error: "socket limit reached" } });
     }
+    const pair = new WebSocketPair();
+    const [client, server] = [pair[0], pair[1]];
+    server.serializeAttachment({
+      id,
+      expiresAt: Math.min(Number(result.body.expiresAt), Date.now() + DEMO_LIMITS.socketLifetimeMs),
+    } satisfies Subscription);
+    this.ctx.acceptWebSocket(server, [id]);
+    server.send(JSON.stringify(result.body.status === "ready" ? { type: "ready" } : { type: "subscribed", status: "pending" }));
+    await this.reconcile();
+    return new Response(null, { status: 101, webSocket: client });
+  }
 
-    this.broadcast(
-      JSON.stringify({
-        type: "ready",
-        handoffId: this.name,
-        receiveUrl: body.receiveUrl,
-      }),
-    );
+  async alarm(): Promise<void> {
+    await this.reconcile();
+  }
 
-    return new Response("ok", { status: 200 });
+  async webSocketMessage(socket: WebSocket, _message: string | ArrayBuffer): Promise<void> {
+    closeSocket(socket, false, 1008);
+    await this.reconcile();
+  }
+
+  async webSocketClose(socket: WebSocket, _code: number, _reason: string, _wasClean: boolean): Promise<void> {
+    closeSocket(socket, false);
+    await this.reconcile();
+  }
+
+  async webSocketError(socket: WebSocket, _error: unknown): Promise<void> {
+    closeSocket(socket, false, 1011);
+    await this.reconcile();
   }
 }

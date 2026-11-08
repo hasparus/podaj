@@ -47,16 +47,6 @@ body {
   background: var(--bg);
 }
 
-.token-input {
-  width: 11rem;
-  margin-left: auto;
-  padding: 0.2rem 0.45rem;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  font: inherit;
-}
-
 .brand {
   font-size: 0.6875rem;
   font-weight: 500;
@@ -80,22 +70,11 @@ body {
   padding: 1rem 1rem 1.75rem;
 }
 
-.compose-meta,
 .compose-hint {
   margin: 0 0 0.5rem;
   font-size: 0.75rem;
   line-height: 1.4;
   color: var(--muted);
-}
-
-.compose-meta .pickup-url {
-  font-size: 0.6875rem;
-  color: var(--text);
-  word-break: break-all;
-}
-
-.main.compose-ready .compose-meta .pickup-url {
-  color: color-mix(in srgb, #86efac 70%, var(--text));
 }
 
 .toolbar {
@@ -184,15 +163,6 @@ body {
   background: color-mix(in srgb, var(--bg) 85%, var(--zinc-850));
 }
 
-.var-row-readonly .cell-key,
-.var-row-readonly .cell-value {
-  margin: 0;
-  font-size: 0.75rem;
-  line-height: 1.3;
-  word-break: break-all;
-  color: color-mix(in srgb, var(--text) 95%, var(--muted));
-}
-
 .row-actions {
   display: flex;
   gap: 0.05rem;
@@ -247,27 +217,6 @@ body {
 
 .status.ok {
   border-color: var(--border);
-  color: var(--text);
-}
-
-.hidden {
-  display: none;
-}
-
-.file-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.35rem 0.5rem;
-  margin-bottom: 0.5rem;
-  font-size: 0.75rem;
-  line-height: 1.35;
-  color: var(--muted);
-}
-
-.file-row input {
-  font: inherit;
-  font-size: 0.75rem;
   color: var(--text);
 }
 

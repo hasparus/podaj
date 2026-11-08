@@ -1,892 +1,230 @@
 import { Effect, Option, Schema } from "effect";
-import { Http, Runtime, type Update } from "foldkit";
+import { Runtime, type Update } from "foldkit";
 import { define as DefineCommand } from "foldkit/command";
 import { Document, HtmlBuilder, type Html } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
-import { modifyFields } from "foldkit/struct";
-import {
-  open,
-  publicKeyFingerprint,
-  seal,
-  type HandoffVariables,
-} from "../crypto/podaj1.js";
+import { publicKeyFingerprint, seal, validateRecipientPublicKey, type HandoffVariables } from "../crypto/podaj1.js";
 import { eyeOffPaths, eyePaths, trashPaths } from "./icons.js";
-import { authHeaders, readInstanceToken, writeInstanceToken } from "./instance-token.js";
 import { looksLikeEnvPaste, parseEnvText } from "./parse-env.js";
 import type { AppRoute } from "./parse-route.js";
-import {
-  apiHandoffErrorText,
-  causeMessage,
-  HOW_IT_WORKS,
-  statusError,
-  userStatusText,
-} from "./user-facing.js";
+import { apiHandoffErrorText, causeMessage, HOW_IT_WORKS, statusError } from "./user-facing.js";
 
-const RECIPIENT_SLUG = "default";
-
-const Row = Schema.Struct({
-  id: Schema.String,
-  key: Schema.String,
-  revealed: Schema.Boolean,
-  value: Schema.String,
-});
-
-const EnvVarRow = Schema.Struct({
-  key: Schema.String,
-  value: Schema.String,
-});
-
+const Row = Schema.Struct({ id: Schema.String, key: Schema.String, revealed: Schema.Boolean, value: Schema.String });
 const Status = Schema.Union([
   Schema.Struct({ _tag: Schema.Literal("Hidden") }),
   Schema.Struct({ _tag: Schema.Literal("Ok"), text: Schema.String }),
   Schema.Struct({ _tag: Schema.Literal("Error"), text: Schema.String }),
 ]);
+const Limits = Schema.Struct({ maxHandoffBytes: Schema.Number });
+const Sent = Schema.Struct({ id: Schema.String, expiresAt: Schema.Number });
 
 export const ModelSchema = Schema.Struct({
-  autosaveRevision: Schema.Number,
-  composeReady: Schema.Boolean,
-  fingerprint: Schema.Option(Schema.String),
+  page: Schema.Literals(["landing", "compose"]),
   handoffId: Schema.Option(Schema.String),
-  instanceToken: Schema.String,
-  nextRowId: Schema.Number,
-  page: Schema.Literals(["compose", "receive", "send"]),
   writeToken: Schema.Option(Schema.String),
   publicKeyPem: Schema.Option(Schema.String),
+  fingerprint: Schema.Option(Schema.String),
+  recipientReady: Schema.Boolean,
+  limitsReady: Schema.Boolean,
+  maxHandoffBytes: Schema.Number,
+  nextRowId: Schema.Number,
   rows: Schema.Array(Row),
-  sealed: Schema.Option(Schema.String),
   sending: Schema.Boolean,
-  showKeyPicker: Schema.Boolean,
+  sent: Schema.Boolean,
   status: Status,
-  vars: Schema.Array(EnvVarRow),
 });
-
 export type Model = typeof ModelSchema.Type;
 
 export const Message = defineMessageUnion({
-  ChangedInstanceToken: { token: Schema.String },
   ChangedRowKey: { key: Schema.String, rowId: Schema.String },
-  ChangedRowValue: { rowId: Schema.String, value: Schema.String },
+  ChangedRowValue: { value: Schema.String, rowId: Schema.String },
   ClickedAdd: {},
-  ClickedShare: {},
   ClickedRemoveRow: { rowId: Schema.String },
   ClickedToggleReveal: { rowId: Schema.String },
   PastedEnv: { text: Schema.String },
-  FailedShare: { text: Schema.String },
-  FailedDecrypt: { text: Schema.String },
-  FailedLoadHandoff: { text: Schema.String },
-  FailedLoadRecipient: { text: Schema.String },
-  SelectedKeyFile: { file: Schema.instanceOf(File) },
-  SucceededShare: { url: Schema.String },
-  SucceededDecrypt: { vars: Schema.Array(EnvVarRow) },
-  SucceededLoadHandoff: { sealed: Schema.String },
-  SucceededLoadRecipient: {
-    fingerprint: Schema.String,
-    publicKeyPem: Schema.String,
-  },
-  SkippedFilePick: {},
+  ClickedSend: {},
+  SucceededRecipient: { fingerprint: Schema.String },
+  SucceededLimits: { maxHandoffBytes: Schema.Number },
+  FailedLoad: { text: Schema.String },
+  SucceededSend: {},
+  FailedSend: { text: Schema.String },
 });
-
 export type Message = typeof Message.Type;
 
-const newRow = (id: number): typeof Row.Type => ({
-  id: String(id),
-  key: "",
-  revealed: false,
-  value: "",
-});
-
+const newRow = (id: number): typeof Row.Type => ({ id: String(id), key: "", revealed: false, value: "" });
 const hiddenStatus = (): typeof Status.Type => ({ _tag: "Hidden" });
+const locked = (model: Model): boolean => model.sending || model.sent;
 
-const toPayload = (rows: ReadonlyArray<typeof Row.Type>): HandoffVariables => ({
-  vars: rows
-    .filter((d) => d.key.trim().length > 0 && d.value.length > 0)
-    .map((d) => ({ key: d.key.trim(), value: d.value })),
-});
-
-const rowsFromEnvVars = (
-  vars: ReadonlyArray<typeof EnvVarRow.Type>,
-  nextRowId: number,
-): { nextRowId: number; rows: Array<typeof Row.Type> } => {
-  if (vars.length === 0) {
-    return { nextRowId, rows: [newRow(nextRowId)] };
+const toPayload = (rows: ReadonlyArray<typeof Row.Type>): HandoffVariables => {
+  const vars: HandoffVariables["vars"] = [];
+  const names = new Set<string>();
+  for (const row of rows) {
+    const key = row.key.trim();
+    if (key.length === 0 && row.value.length === 0) { continue; }
+    if (key.length === 0 || row.value.length === 0) { throw new Error("Complete each key and value, or remove the unfinished row."); }
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key)) { throw new Error("Use a valid environment variable name."); }
+    if (names.has(key)) { throw new Error(`Duplicate key: ${key}.`); }
+    names.add(key);
+    vars.push({ key, value: row.value });
   }
-  const rows = vars.map((v, index) => ({
-    id: String(nextRowId + index),
-    key: v.key,
-    revealed: false,
-    value: v.value,
-  }));
-  const trailingId = nextRowId + vars.length;
-  return {
-    nextRowId: trailingId + 1,
-    rows: [...rows, newRow(trailingId)],
-  };
+  if (vars.length === 0) { throw new Error("Add a key and value."); }
+  return { vars };
 };
 
-const LoadRecipientKey = DefineCommand("LoadRecipientKey", {
-  messages: [Message.SucceededLoadRecipient, Message.FailedLoadRecipient],
-  execute: Effect.gen(function* () {
-    const response = yield* Effect.tryPromise({
-      try: () => fetch("/recipient.pem"),
-      catch: (error) => error,
-    });
-    if (!response.ok) {
-      return Message.FailedLoadRecipient({
-        text: `This site isn't set up yet (${response.status}).`,
-      });
-    }
-    const text = yield* Effect.tryPromise({
-      try: () => response.text(),
-      catch: (error) => error,
-    });
-    const pem = text.trim();
-    if (!pem.includes("BEGIN PUBLIC KEY")) {
-      return Message.FailedLoadRecipient({
-        text: "No recipient key is configured yet.",
-      });
-    }
-    const fingerprint = yield* Effect.tryPromise({
-      try: () => publicKeyFingerprint(pem),
-      catch: (error) => error,
-    });
-    return Message.SucceededLoadRecipient({ fingerprint, publicKeyPem: pem });
-  }).pipe(
-    Effect.catch((error) =>
-      Effect.succeed(
-        Message.FailedLoadRecipient({
-          text: userStatusText(causeMessage(error)),
-        }),
-      ),
-    ),
-    Effect.provide(Http.layer),
-  ),
+const responseJson = async (response: Response): Promise<unknown> => {
+  const data: unknown = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const code = typeof data === "object" && data !== null && "error" in data && typeof data.error === "string" ? data.error : undefined;
+    throw new Error(apiHandoffErrorText(code, response.status));
+  }
+  return data;
+};
+
+const LoadRecipient = DefineCommand("LoadRecipient", {
+  args: { publicKeyPem: Schema.String },
+  messages: [Message.SucceededRecipient, Message.FailedLoad],
+  execute: ({ publicKeyPem }) => Effect.tryPromise({
+    try: async () => {
+      await validateRecipientPublicKey(publicKeyPem);
+      return Message.SucceededRecipient({ fingerprint: await publicKeyFingerprint(publicKeyPem) });
+    },
+    catch: () => new Error("This fill link has an invalid recipient key. Ask for a new link."),
+  }).pipe(Effect.catch((error) => Effect.succeed(Message.FailedLoad({ text: causeMessage(error) })))),
 });
 
-const LoadHandoff = DefineCommand("LoadHandoff", {
-  args: { handoffId: Schema.String },
-  messages: [Message.SucceededLoadHandoff, Message.FailedLoadHandoff],
-  execute: ({ handoffId }) =>
-    Effect.gen(function* () {
-      const response = yield* Effect.tryPromise({
-        try: () =>
-          fetch(`/api/handoffs/${handoffId}`, { headers: authHeaders() }),
-        catch: (error) => error,
-      });
-      if (response.status === 410) {
-        return Message.FailedLoadHandoff({
-          text: "This link was already used or expired.",
-        });
+const LoadLimits = DefineCommand("LoadLimits", {
+  messages: [Message.SucceededLimits, Message.FailedLoad],
+  execute: Effect.tryPromise({
+    try: async () => {
+      const data = Schema.decodeUnknownSync(Limits)(await responseJson(await fetch("/api/config", {
+        cache: "no-store", signal: AbortSignal.timeout(10_000),
+      })));
+      if (!Number.isInteger(data.maxHandoffBytes) || data.maxHandoffBytes <= 0 || data.maxHandoffBytes > 1_048_576) {
+        throw new Error("This instance has invalid limits.");
       }
-      if (!response.ok) {
-        const err = (yield* Effect.tryPromise({
-          try: () => response.json(),
-          catch: () => ({}),
-        })) as { error?: string };
-        return Message.FailedLoadHandoff({
-          text: apiHandoffErrorText(err.error, response.status),
-        });
-      }
-      const data = (yield* Effect.tryPromise({
-        try: () => response.json(),
-        catch: (error) => error,
-      })) as { sealed?: unknown };
-      if (typeof data.sealed !== "string") {
-        return Message.FailedLoadHandoff({
-          text: "Couldn't load this link (invalid response).",
-        });
-      }
-      return Message.SucceededLoadHandoff({ sealed: data.sealed });
-    }).pipe(
-      Effect.catch((error) =>
-        Effect.succeed(
-          Message.FailedLoadHandoff({
-            text: userStatusText(causeMessage(error)),
-          }),
-        ),
-      ),
-      Effect.provide(Http.layer),
-    ),
+      return Message.SucceededLimits(data);
+    },
+    catch: (error) => error,
+  }).pipe(Effect.catch((error) => Effect.succeed(Message.FailedLoad({ text: causeMessage(error) })))),
 });
 
-const ShareHandoff = DefineCommand("ShareHandoff", {
+const SendHandoff = DefineCommand("SendHandoff", {
   args: {
-    handoffId: Schema.Option(Schema.String),
-    publicKeyPem: Schema.String,
-    revision: Schema.Number,
-    rows: Schema.Array(Row),
-    waitMs: Schema.Number,
-    writeToken: Schema.Option(Schema.String),
+    handoffId: Schema.String, writeToken: Schema.String, publicKeyPem: Schema.String,
+    maxHandoffBytes: Schema.Number, rows: Schema.Array(Row),
   },
-  messages: [Message.SucceededShare, Message.FailedShare],
-  execute: ({ handoffId, publicKeyPem, rows, waitMs, writeToken }) =>
-    Effect.gen(function* () {
-      if (waitMs > 0) {
-        yield* Effect.sleep(`${waitMs} millis`);
-      }
-      const payload = toPayload(rows);
-      if (payload.vars.length === 0) {
-        return Message.FailedShare({ text: "Add a key and value." });
-      }
-      const sealed = yield* Effect.tryPromise({
-        try: () => seal(payload, publicKeyPem, RECIPIENT_SLUG),
-        catch: (error) => error,
+  messages: [Message.SucceededSend, Message.FailedSend],
+  execute: ({ handoffId, writeToken, publicKeyPem, maxHandoffBytes, rows }) => Effect.tryPromise({
+    try: async () => {
+      const sealed = await seal(toPayload(rows), publicKeyPem, "default");
+      if (new TextEncoder().encode(sealed).byteLength > maxHandoffBytes) { throw new Error("That's too large to send."); }
+      const response = await fetch(`/api/handoffs/${handoffId}`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${writeToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ sealed }),
+        redirect: "error", signal: AbortSignal.timeout(10_000),
       });
-      const slotId = Option.getOrNull(handoffId);
-      const token = Option.getOrNull(writeToken);
-      const useReserved = slotId !== null && token !== null;
-      const response = yield* Effect.tryPromise({
-        try: () =>
-          useReserved
-            ? fetch(`/api/handoffs/${slotId}`, {
-                body: JSON.stringify({ sealed, writeToken: token }),
-                headers: authHeaders({ "Content-Type": "application/json" }),
-                method: "PUT",
-              })
-            : fetch("/api/handoffs", {
-                body: JSON.stringify({ sealed }),
-                headers: authHeaders({ "Content-Type": "application/json" }),
-                method: "POST",
-              }),
-        catch: (error) => error,
-      });
-      if (!response.ok) {
-        const err = (yield* Effect.tryPromise({
-          try: () => response.json(),
-          catch: () => ({}),
-        })) as { error?: string };
-        if (
-          useReserved &&
-          response.status === 409 &&
-          err.error === "already shared"
-        ) {
-          return Message.SucceededShare({
-            url: new URL(`/h/${slotId}`, globalThis.location.origin).toString(),
-          });
-        }
-        return Message.FailedShare({
-          text: apiHandoffErrorText(err.error, response.status),
-        });
-      }
-      const data = (yield* Effect.tryPromise({
-        try: () => response.json(),
-        catch: (error) => error,
-      })) as { url?: unknown };
-      if (typeof data.url !== "string") {
-        return Message.FailedShare({
-          text: "Couldn't send (invalid response).",
-        });
-      }
-      return Message.SucceededShare({ url: data.url });
-    }).pipe(
-      Effect.catch((error) =>
-        Effect.succeed(
-          Message.FailedShare({
-            text: userStatusText(causeMessage(error)),
-          }),
-        ),
-      ),
-      Effect.provide(Http.layer),
-    ),
+      const data = Schema.decodeUnknownSync(Sent)(await responseJson(response));
+      if (data.id !== handoffId || !Number.isFinite(data.expiresAt)) { throw new Error("Couldn't confirm this handoff was sent."); }
+      return Message.SucceededSend();
+    },
+    catch: (error) => error,
+  }).pipe(Effect.catch((error) => Effect.succeed(Message.FailedSend({ text: causeMessage(error) })))),
 });
 
-const DecryptHandoff = DefineCommand("DecryptHandoff", {
-  args: { file: Schema.instanceOf(File), sealed: Schema.String },
-  messages: [Message.SucceededDecrypt, Message.FailedDecrypt],
-  execute: ({ file, sealed }) =>
-    Effect.gen(function* () {
-      const pem = yield* Effect.tryPromise({
-        try: () => file.text(),
-        catch: (error) => error,
-      });
-      const { payload } = yield* Effect.tryPromise({
-        try: () => open(sealed, pem),
-        catch: (error) => error,
-      });
-      return Message.SucceededDecrypt({ vars: payload.vars });
-    }).pipe(
-      Effect.catch((error) =>
-        Effect.succeed(
-          Message.FailedDecrypt({
-            text: userStatusText(causeMessage(error)),
-          }),
-        ),
-      ),
-    ),
-});
-
-const emptySendModel = (): Model => ({
-  autosaveRevision: 0,
-  composeReady: false,
-  fingerprint: Option.none(),
-  handoffId: Option.none(),
-  instanceToken: readInstanceToken(),
-  nextRowId: 2,
-  page: "send",
-  publicKeyPem: Option.none(),
-  rows: [newRow(1)],
-  sealed: Option.none(),
-  sending: false,
-  showKeyPicker: false,
-  status: hiddenStatus(),
-  vars: [],
-  writeToken: Option.none(),
-});
-
-const dispatchComposeReady = (url: string): void => {
-  if (typeof globalThis.dispatchEvent !== "function") {
-    return;
-  }
-  globalThis.dispatchEvent(
-    new CustomEvent("podaj:ready", { detail: { url } }),
-  );
-};
-
-const scheduleComposeUpload = (
-  model: Model,
-  waitMs: number,
-): Update.Return<Model, Message> | null => {
-  if (model.page !== "compose" || Option.isNone(model.writeToken)) {
-    return null;
-  }
-  const pem = Option.getOrNull(model.publicKeyPem);
-  const handoffId = Option.getOrNull(model.handoffId);
-  const writeToken = Option.getOrNull(model.writeToken);
-  if (pem === null || handoffId === null || writeToken === null) {
-    return null;
-  }
-  if (toPayload(model.rows).vars.length === 0) {
-    return null;
-  }
-  const revision = model.autosaveRevision + 1;
-  return {
-    commands: [
-      ShareHandoff({
-        handoffId: Option.some(handoffId),
-        publicKeyPem: pem,
-        revision,
-        rows: model.rows,
-        waitMs,
-        writeToken: Option.some(writeToken),
-      }),
-    ],
-    model: modifyFields(model, {
-      autosaveRevision: () => revision,
-      sending: () => true,
-    }),
+export const init = (route: AppRoute): ReturnType<Runtime.ApplicationInit<Model, typeof Message.Type>> => {
+  const model: Model = {
+    page: route.page,
+    handoffId: route.page === "compose" ? Option.some(route.handoffId) : Option.none(),
+    writeToken: route.page === "compose" ? Option.fromNullishOr(route.writeToken) : Option.none(),
+    publicKeyPem: route.page === "compose" ? Option.fromNullishOr(route.publicKeyPem) : Option.none(),
+    fingerprint: Option.none(), recipientReady: false, limitsReady: false, maxHandoffBytes: 32_768,
+    nextRowId: 2, rows: [newRow(1)], sending: false, sent: false, status: hiddenStatus(),
   };
+  if (route.page === "landing") { return { model }; }
+  if (route.writeToken === null || route.publicKeyPem === null) {
+    return { model: { ...model, status: statusError("This fill link is incomplete. Ask for a new link from the CLI.") } };
+  }
+  return { model, commands: [LoadRecipient({ publicKeyPem: route.publicKeyPem }), LoadLimits()] };
 };
 
-const afterComposeEdit = (
-  model: Model,
-  waitMs: number,
-): Update.Return<Model, Message> => {
-  const scheduled = scheduleComposeUpload(model, waitMs);
-  return scheduled ?? { model };
-};
-
-export const init = (
-  route: AppRoute,
-): ReturnType<Runtime.ApplicationInit<Model, typeof Message.Type>> => {
-  if (route.page === "receive") {
+export const update = (model: Model, message: Message) => Message.match<Update.Return<Model, Message>>(message, {
+  ChangedRowKey: ({ key, rowId }) => ({ model: locked(model) ? model : { ...model, rows: model.rows.map((row) => row.id === rowId ? { ...row, key } : row) } }),
+  ChangedRowValue: ({ value, rowId }) => ({ model: locked(model) ? model : { ...model, rows: model.rows.map((row) => row.id === rowId ? { ...row, value } : row) } }),
+  ClickedAdd: () => ({ model: locked(model) ? model : { ...model, rows: [...model.rows, newRow(model.nextRowId)], nextRowId: model.nextRowId + 1 } }),
+  ClickedRemoveRow: ({ rowId }) => ({ model: locked(model) || model.rows.length <= 1 ? model : { ...model, rows: model.rows.filter((row) => row.id !== rowId) } }),
+  ClickedToggleReveal: ({ rowId }) => ({ model: locked(model) ? model : { ...model, rows: model.rows.map((row) => row.id === rowId ? { ...row, revealed: !row.revealed } : row) } }),
+  PastedEnv: ({ text }) => {
+    if (locked(model)) { return { model }; }
+    const vars = parseEnvText(text);
+    if (vars.length === 0) { return { model: { ...model, status: statusError("Couldn't read pasted text as KEY=value lines.") } }; }
+    const rows = vars.map((entry, index) => ({ ...entry, id: String(model.nextRowId + index), revealed: false }));
+    const next = model.nextRowId + rows.length;
+    return { model: { ...model, rows: [...rows, newRow(next)], nextRowId: next + 1, status: hiddenStatus() } };
+  },
+  ClickedSend: () => {
+    if (model.page !== "compose" || locked(model) || !model.recipientReady || !model.limitsReady) { return { model }; }
+    const handoffId = Option.getOrNull(model.handoffId);
+    const writeToken = Option.getOrNull(model.writeToken);
+    const publicKeyPem = Option.getOrNull(model.publicKeyPem);
+    if (handoffId === null || writeToken === null || publicKeyPem === null) { return { model }; }
+    try { toPayload(model.rows); } catch (error) { return { model: { ...model, status: statusError(causeMessage(error)) } }; }
     return {
-      commands: [LoadHandoff({ handoffId: route.handoffId })],
-      model: {
-        ...emptySendModel(),
-        handoffId: Option.some(route.handoffId),
-        page: "receive",
-      },
+      model: { ...model, sending: true, status: hiddenStatus() },
+      commands: [SendHandoff({ handoffId, writeToken, publicKeyPem, rows: model.rows, maxHandoffBytes: model.maxHandoffBytes })],
     };
+  },
+  SucceededRecipient: ({ fingerprint }) => ({ model: { ...model, fingerprint: Option.some(fingerprint), recipientReady: true } }),
+  SucceededLimits: ({ maxHandoffBytes }) => ({ model: { ...model, maxHandoffBytes, limitsReady: true } }),
+  FailedLoad: ({ text }) => ({ model: { ...model, status: statusError(text) } }),
+  FailedSend: ({ text }) => ({ model: { ...model, sending: false, status: statusError(text) } }),
+  SucceededSend: () => ({ model: { ...model, sending: false, sent: true, rows: model.rows.map((row) => ({ ...row, value: "", revealed: false })), status: { _tag: "Ok", text: "sent." } } }),
+});
+
+const pixelIcon = (h: HtmlBuilder<Message>, paths: readonly string[]): Html => h.svg(
+  [h.Class("pixel-icon"), h.ViewBox("0 0 24 24"), h.Width("16"), h.Height("16"), h.AriaHidden(true)],
+  paths.map((d) => h.path([h.Fill("currentColor"), h.D(d)])),
+);
+
+const statusView = (model: Model, h: HtmlBuilder<Message>): Html => model.status._tag === "Hidden" ? null :
+  h.div([h.Class(`status ${model.status._tag === "Ok" ? "ok" : "error"}`), h.AriaLive("polite")], [model.status.text]);
+
+const fillView = (model: Model, h: HtmlBuilder<Message>): Html => {
+  if (!model.recipientReady || !model.limitsReady) {
+    return h.main([h.Class("main")], [statusView(model, h), ...(model.status._tag === "Hidden" ? [h.p([h.Class("compose-hint")], ["loading request…"])] : [])]);
   }
-  if (route.page === "compose") {
-    const missingWrite = route.writeToken === null;
-    return {
-      commands: [LoadRecipientKey()],
-      model: {
-        ...emptySendModel(),
-        handoffId: Option.some(route.handoffId),
-        page: "compose",
-        writeToken:
-          route.writeToken === null
-            ? Option.none()
-            : Option.some(route.writeToken),
-        status: missingWrite
-          ? statusError("This compose link is incomplete.")
-          : hiddenStatus(),
-      },
-    };
-  }
-  return {
-    commands: [LoadRecipientKey()],
-    model: emptySendModel(),
-  };
-};
-
-export const update = (model: Model, message: Message) =>
-  Message.match<Update.Return<Model, Message>>(message, {
-    ChangedInstanceToken: ({ token }) => {
-      writeInstanceToken(token);
-      const next = modifyFields(model, { instanceToken: () => token });
-      if (token.length === 0) {
-        return { model: next };
-      }
-      if (model.page === "receive" && Option.isNone(model.sealed)) {
-        const handoffId = Option.getOrNull(model.handoffId);
-        if (handoffId === null) {
-          return { model: next };
-        }
-        return {
-          commands: [LoadHandoff({ handoffId })],
-          model: modifyFields(next, { status: () => hiddenStatus() }),
-        };
-      }
-      return { model: next };
-    },
-    ChangedRowKey: ({ key, rowId }) =>
-      afterComposeEdit(
-        modifyFields(model, {
-          rows: (rows) =>
-            rows.map((row) =>
-              row.id === rowId
-                ? { id: row.id, key, revealed: row.revealed, value: row.value }
-                : row,
-            ),
-        }),
-        600,
-      ),
-    ChangedRowValue: ({ rowId, value }) =>
-      afterComposeEdit(
-        modifyFields(model, {
-          rows: (rows) =>
-            rows.map((row) =>
-              row.id === rowId
-                ? { id: row.id, key: row.key, revealed: row.revealed, value }
-                : row,
-            ),
-        }),
-        600,
-      ),
-    ClickedAdd: () => ({
-      model: modifyFields(model, {
-        nextRowId: (nextRowId) => nextRowId + 1,
-        rows: (rows) => [...rows, newRow(model.nextRowId)],
-      }),
-    }),
-    ClickedShare: () => {
-      const pem = Option.getOrNull(model.publicKeyPem);
-      if (pem === null) {
-        return {
-          model: modifyFields(model, {
-            status: () =>
-              statusError("No recipient key is configured yet."),
-          }),
-        };
-      }
-      if (
-        model.page === "compose" &&
-        Option.isNone(model.writeToken)
-      ) {
-        return {
-          model: modifyFields(model, {
-            status: () => statusError("This compose link is incomplete."),
-          }),
-        };
-      }
-      return {
-        commands: [
-          ShareHandoff({
-            handoffId: model.handoffId,
-            publicKeyPem: pem,
-            revision: model.autosaveRevision + 1,
-            rows: model.rows,
-            waitMs: 0,
-            writeToken: model.writeToken,
-          }),
-        ],
-        model: modifyFields(model, {
-          sending: () => true,
-          status: () => hiddenStatus(),
-        }),
-      };
-    },
-    ClickedRemoveRow: ({ rowId }) => ({
-      model: modifyFields(model, {
-        rows: (rows) =>
-          rows.length <= 1 ? rows : rows.filter((row) => row.id !== rowId),
-      }),
-    }),
-    PastedEnv: ({ text }) => {
-      const vars = parseEnvText(text);
-      if (vars.length === 0) {
-        return {
-          model: modifyFields(model, {
-            status: () =>
-              statusError("Couldn't read pasted text as KEY=value lines."),
-          }),
-        };
-      }
-      const { nextRowId, rows } = rowsFromEnvVars(vars, model.nextRowId);
-      return afterComposeEdit(
-        modifyFields(model, {
-          nextRowId: () => nextRowId,
-          rows: () => rows,
-          status: () => hiddenStatus(),
-        }),
-        0,
-      );
-    },
-    ClickedToggleReveal: ({ rowId }) => ({
-      model: modifyFields(model, {
-        rows: (rows) =>
-          rows.map((row) =>
-            row.id === rowId
-              ? {
-                  id: row.id,
-                  key: row.key,
-                  revealed: !row.revealed,
-                  value: row.value,
-                }
-              : row,
-          ),
-      }),
-    }),
-    FailedShare: ({ text }) => ({
-      model: modifyFields(model, {
-        sending: () => false,
-        status: () => statusError(text),
-      }),
-    }),
-    FailedDecrypt: ({ text }) => ({
-      model: modifyFields(model, {
-        status: () => statusError(text),
-      }),
-    }),
-    FailedLoadHandoff: ({ text }) => ({
-      model: modifyFields(model, {
-        status: () => statusError(text),
-      }),
-    }),
-    FailedLoadRecipient: ({ text }) => ({
-      model: modifyFields(model, {
-        status: () => statusError(text),
-      }),
-    }),
-    SelectedKeyFile: ({ file }) => {
-      const sealed = Option.getOrNull(model.sealed);
-      if (sealed === null) {
-        return { model };
-      }
-      return {
-        commands: [DecryptHandoff({ file, sealed })],
-        model: modifyFields(model, { status: () => hiddenStatus() }),
-      };
-    },
-    SucceededShare: ({ url }) => {
-      if (model.page === "compose") {
-        dispatchComposeReady(url);
-      }
-      const statusText =
-        model.page === "compose"
-          ? "Ready."
-          : `share this once.\n${url}`;
-      return {
-        model: modifyFields(model, {
-          composeReady: () => model.page === "compose",
-          rows: (rows) =>
-            rows.map((row) => ({
-              id: row.id,
-              key: row.key,
-              revealed: row.revealed,
-              value: "",
-            })),
-          sending: () => false,
-          status: () => ({ _tag: "Ok", text: statusText }),
-        }),
-      };
-    },
-    SucceededDecrypt: ({ vars }) => ({
-      model: modifyFields(model, {
-        showKeyPicker: () => false,
-        status: () => hiddenStatus(),
-        vars: () => vars,
-      }),
-    }),
-    SucceededLoadHandoff: ({ sealed }) => ({
-      model: modifyFields(model, {
-        sealed: () => Option.some(sealed),
-        showKeyPicker: () => true,
-        status: () => hiddenStatus(),
-      }),
-    }),
-    SucceededLoadRecipient: ({ fingerprint, publicKeyPem }) => ({
-      model: modifyFields(model, {
-        fingerprint: () => Option.some(fingerprint),
-        publicKeyPem: () => Option.some(publicKeyPem),
-        status: () => hiddenStatus(),
-      }),
-    }),
-    SkippedFilePick: () => ({ model }),
-  });
-
-const pixelIcon = (
-  h: HtmlBuilder<Message>,
-  paths: readonly string[],
-): Html =>
-  h.svg(
-    [
-      h.Class("pixel-icon"),
-      h.ViewBox("0 0 24 24"),
-      h.Width("16"),
-      h.Height("16"),
-      h.AriaHidden(true),
-    ],
-    paths.map((d) => h.path([h.Fill("currentColor"), h.D(d)])),
-  );
-
-const siteHeader = (model: Model, h: HtmlBuilder<Message>): Html => {
-  const meta = Option.match(model.fingerprint, {
-    onNone: () => null,
-    onSome: (fp) => h.span([h.Class("key-meta")], [fp]),
-  });
-  return h.header(
-    [h.Class("site-header")],
-    [
-      h.span([h.Class("brand")], ["podaj"]),
-      h.input([
-        h.Class("token-input"),
-        h.Type("password"),
-        h.Placeholder("instance token"),
-        h.Title("instance token for this deployment"),
-        h.Value(model.instanceToken),
-        h.Autocomplete("off"),
-        h.Spellcheck(false),
-        h.OnInput((token) => Message.ChangedInstanceToken({ token })),
-      ]),
-      ...(meta === null ? [] : [meta]),
-    ],
-  );
-};
-
-const siteFooter = (h: HtmlBuilder<Message>): Html =>
-  h.footer([h.Class("site-footer")], [HOW_IT_WORKS]);
-
-const statusView = (model: Model, h: HtmlBuilder<Message>): Html => {
-  if (model.status._tag === "Hidden") {
-    return null;
-  }
-  const kind = model.status._tag === "Ok" ? "ok" : "error";
-  return h.div([h.Class(`status ${kind}`)], [model.status.text]);
-};
-
-const sendView = (model: Model, h: HtmlBuilder<Message>): Html => {
-  const onEnvPaste = h.OnPastePreventDefault((text) =>
-    looksLikeEnvPaste(text)
-      ? Option.some(Message.PastedEnv({ text }))
-      : Option.none(),
-  );
-
-  const tableBody = model.rows.map((row) =>
-    h.div(
-      [h.Class("var-row"), h.Key(row.id)],
-      [
-        h.input([
-          h.Class("cell-key"),
-          h.Placeholder("OPENAI_API_KEY"),
-          h.Value(row.key),
-          h.OnInput((value) =>
-            Message.ChangedRowKey({ key: value, rowId: row.id }),
-          ),
-          onEnvPaste,
-          h.Autocomplete("off"),
-          h.Spellcheck(false),
+  const onPaste = h.OnPastePreventDefault((text) => looksLikeEnvPaste(text) ? Option.some(Message.PastedEnv({ text })) : Option.none());
+  return h.main([h.Class("main")], [
+    h.p([h.Class("compose-hint")], ["Fill in the values, then send. Edits stay in this tab until you send."]),
+    h.div([h.Class("var-table"), h.Title("Paste a .env file or KEY=value lines"), onPaste], [
+      h.div([h.Class("var-head")], [h.span([], ["key"]), h.span([], ["value"]), h.span([], [""])]),
+      ...model.rows.map((row) => h.div([h.Class("var-row"), h.Key(row.id)], [
+        h.input([h.Class("cell-key"), h.AriaLabel("key"), h.Placeholder("OPENAI_API_KEY"), h.Value(row.key), h.Disabled(locked(model)), h.Autocomplete("off"), h.Spellcheck(false), h.OnInput((key) => Message.ChangedRowKey({ key, rowId: row.id })), onPaste]),
+        h.input([h.Type(row.revealed ? "text" : "password"), h.AriaLabel("value"), h.Placeholder("value"), h.Value(row.value), h.Disabled(locked(model)), h.Autocomplete("off"), h.OnInput((value) => Message.ChangedRowValue({ value, rowId: row.id })), onPaste]),
+        h.div([h.Class("row-actions")], [
+          ...(row.value.length === 0 ? [] : [h.button([h.Class("icon-btn"), h.Type("button"), h.AriaLabel(row.revealed ? "hide" : "show"), h.Disabled(locked(model)), h.OnClick(Message.ClickedToggleReveal({ rowId: row.id }))], [pixelIcon(h, row.revealed ? eyeOffPaths : eyePaths)])]),
+          h.button([h.Class("icon-btn"), h.Type("button"), h.AriaLabel("remove"), h.Disabled(locked(model) || model.rows.length <= 1), h.OnClick(Message.ClickedRemoveRow({ rowId: row.id }))], [pixelIcon(h, trashPaths)]),
         ]),
-        h.input([
-          h.Type(row.revealed ? "text" : "password"),
-          h.Placeholder("value"),
-          h.Value(row.value),
-          h.OnInput((value) =>
-            Message.ChangedRowValue({ rowId: row.id, value }),
-          ),
-          onEnvPaste,
-          h.Autocomplete("off"),
-        ]),
-        h.div(
-          [h.Class("row-actions")],
-          [
-            ...(row.value.length > 0
-              ? [
-                  h.button(
-                    [
-                      h.Class("icon-btn"),
-                      h.Type("button"),
-                      h.AriaLabel(row.revealed ? "hide" : "show"),
-                      h.OnClick(Message.ClickedToggleReveal({ rowId: row.id })),
-                    ],
-                    [pixelIcon(h, row.revealed ? eyeOffPaths : eyePaths)],
-                  ),
-                ]
-              : []),
-            h.button(
-              [
-                h.Class("icon-btn"),
-                h.Type("button"),
-                h.AriaLabel("remove"),
-                h.Disabled(model.rows.length <= 1),
-                h.OnClick(Message.ClickedRemoveRow({ rowId: row.id })),
-              ],
-              [pixelIcon(h, trashPaths)],
-            ),
-          ],
-        ),
-      ],
-    ),
-  );
-
-  const composePickup =
-    model.page === "compose"
-      ? Option.match(model.handoffId, {
-          onNone: () => null,
-          onSome: (id) => {
-            const pickup = `${globalThis.location.origin}/h/${id}`;
-            return h.p(
-              [h.Class("compose-meta")],
-              [
-                "Recipient link (already set): ",
-                h.code([h.Class("pickup-url")], [pickup]),
-                model.sending ? " · Uploading…" : "",
-                model.composeReady ? " · Ready." : "",
-              ],
-            );
-          },
-        })
-      : null;
-
-  const shareButton =
-    model.page === "send"
-      ? h.button(
-          [
-            h.Class("btn btn-primary"),
-            h.Type("button"),
-            h.Disabled(model.sending),
-            h.OnClick(Message.ClickedShare()),
-          ],
-          ["create link"],
-        )
-      : null;
-
-  const composeHint =
-    model.page === "compose"
-      ? h.p([h.Class("compose-hint")], [
-          "Paste or edit — uploads automatically when rows are complete.",
-        ])
-      : null;
-
-  return h.main(
-    [
-      h.Class(
-        model.composeReady ? "main compose-ready" : "main",
-      ),
-    ],
-    [
-      composePickup,
-      composeHint,
-      h.div(
-        [
-          h.Class("var-table"),
-          h.Title("Paste a .env file or KEY=value lines to fill the table"),
-          onEnvPaste,
-        ],
-        [
-          h.div(
-            [h.Class("var-head")],
-            [
-              h.span([], ["key"]),
-              h.span([], ["value"]),
-              h.span([], [""]),
-            ],
-          ),
-          ...tableBody,
-        ],
-      ),
-      h.div(
-        [h.Class("toolbar")],
-        [
-          h.button(
-            [h.Class("btn"), h.Type("button"), h.OnClick(Message.ClickedAdd())],
-            ["add"],
-          ),
-          ...(shareButton === null ? [] : [shareButton]),
-        ],
-      ),
-      statusView(model, h),
-    ].filter((node): node is Html => node !== null),
-  );
-};
-
-const receiveView = (model: Model, h: HtmlBuilder<Message>): Html => {
-  const filePicker =
-    model.showKeyPicker && model.vars.length === 0
-      ? h.div(
-          [h.Class("file-row")],
-          [
-            h.label(
-              [h.Title("Usually ~/.local/share/podaj/private.pem")],
-              ["key file"],
-            ),
-            h.input([
-              h.Type("file"),
-              h.Accept(".pem"),
-              h.Id("key-file"),
-              h.OnFileChange((files) => {
-                const file = files[0];
-                return file === undefined
-                  ? Message.SkippedFilePick()
-                  : Message.SelectedKeyFile({ file });
-              }),
-            ]),
-          ],
-        )
-      : null;
-
-  const table =
-    model.vars.length > 0
-      ? h.div([h.Class("var-table")], [
-          h.div(
-            [h.Class("var-head")],
-            [
-              h.span([], ["key"]),
-              h.span([], ["value"]),
-              h.span([], [""]),
-            ],
-          ),
-          ...model.vars.map((row) =>
-            h.div(
-              [h.Class("var-row var-row-readonly"), h.Key(row.key)],
-              [
-                h.code([h.Class("cell-key")], [row.key]),
-                h.code([h.Class("cell-value")], [row.value]),
-                h.span([], [""]),
-              ],
-            ),
-          ),
-        ])
-      : null;
-
-  return h.main(
-    [h.Class("main")],
-    [statusView(model, h), filePicker, table].filter(
-      (node): node is Html => node !== null,
-    ),
-  );
+      ])),
+    ]),
+    h.div([h.Class("toolbar")], [
+      h.button([h.Class("btn"), h.Type("button"), h.Disabled(locked(model)), h.OnClick(Message.ClickedAdd())], ["add"]),
+      h.button([h.Class("btn btn-primary"), h.Type("button"), h.Disabled(locked(model)), h.OnClick(Message.ClickedSend())], [model.sending ? "sending…" : "send"]),
+    ]),
+    statusView(model, h),
+  ]);
 };
 
 export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
-  body: h.div(
-    [h.Class("shell")],
-    [
-      siteHeader(model, h),
-      model.page === "receive" ? receiveView(model, h) : sendView(model, h),
-      siteFooter(h),
-    ],
-  ),
   title: "podaj",
+  body: h.div([h.Class("shell")], [
+    h.header([h.Class("site-header")], [h.span([h.Class("brand")], ["podaj"]), ...Option.match(model.fingerprint, {
+      onNone: () => [], onSome: (fingerprint) => [h.span([h.Class("key-meta")], [fingerprint.slice(0, 16)])],
+    })]),
+    model.page === "compose" ? fillView(model, h) : h.main([h.Class("main")], [
+      h.p([h.Class("compose-hint")], ["Open the fill link from your CLI."]),
+      h.code([], ["podaj wait API_KEY"]),
+    ]),
+    h.footer([h.Class("site-footer")], [HOW_IT_WORKS]),
+  ]),
 });

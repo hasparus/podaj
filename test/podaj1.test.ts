@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { webcrypto } from "node:crypto";
 
-import { open, seal } from "../src/crypto/podaj1.js";
+import { importPrivateKey, open, publicKeyFingerprint, publicKeyFromFragment, publicKeyToFragment, seal, validateRecipientPublicKey } from "../src/crypto/podaj1.js";
 
 const subtle = webcrypto.subtle;
 
@@ -38,10 +38,30 @@ describe("PODAJ1", () => {
         { key: "DATABASE_URL", value: "postgres://local/dev" },
       ],
     };
-    const sealed = await seal(payload, publicPem, "production");
+    const sealed = await seal(payload, publicPem, "default");
     expect(sealed.startsWith("PODAJ1.")).toBe(true);
     const opened = await open(sealed, privatePem);
-    expect(opened.env).toBe("production");
+    expect(opened.env).toBe("default");
     expect(opened.payload).toEqual(payload);
+  });
+
+  it("encodes CLI-supplied public keys and imports private keys without making them exportable", async () => {
+    const { publicPem: publicKeyPem, privatePem } = await generatePair();
+    const privateKey = await importPrivateKey(privatePem);
+    expect(privateKey.extractable).toBe(false);
+    expect(privateKey.usages).toEqual(["decrypt"]);
+    await expect(crypto.subtle.exportKey("pkcs8", privateKey)).rejects.toThrow();
+    await validateRecipientPublicKey(publicKeyPem);
+    const payload = { vars: [{ key: "EXAMPLE", value: "synthetic" }] };
+    expect((await open(await seal(payload, publicKeyPem, "default"), privateKey)).payload).toEqual(payload);
+    const fragment = publicKeyToFragment(publicKeyPem);
+    expect(fragment).toMatch(/^[A-Za-z0-9_-]+$/u);
+    expect(publicKeyToFragment(publicKeyFromFragment(fragment))).toBe(fragment);
+    const hash = await crypto.subtle.digest("SHA-256", Buffer.from(fragment, "base64url"));
+    expect(await publicKeyFingerprint(publicKeyPem)).toBe(Buffer.from(hash).toString("hex"));
+  });
+
+  it.each(["", "%%%", "a".repeat(393), "a".repeat(400) + "=="])("rejects malformed recipient fragments (%s)", (fragment) => {
+    expect(() => publicKeyFromFragment(fragment)).toThrow();
   });
 });

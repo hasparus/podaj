@@ -6,24 +6,9 @@
     "moduleResolution": "NodeNext",
     "strict": true,
     "noEmit": true,
-    "allowJs": true,
-    "checkJs": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": ["node"],
+    "verbatimModuleSyntax": true
   },
-  "include": [
-    "scripts/config.mjs",
-    "scripts/decrypt-handoff.mjs",
-    "scripts/deploy-text.mjs",
-    "scripts/init-args.mjs",
-    "scripts/init-flow.mjs",
-    "scripts/instance.mjs",
-    "scripts/keypair.mjs",
-    "scripts/keygen.mjs",
-    "scripts/open-podaj1.mjs",
-    "scripts/podaj.mjs",
-    "scripts/select-vars.mjs",
-    "scripts/stdin-token.mjs",
-    "scripts/stage-worker.mjs"
-  ]
+  "include": ["scripts/**/*.ts"]
 }

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "cloudflare-podaj": {
+      "url": "https://mcp.cloudflare.com/mcp",
+      "exposure": "codemode",
+      "description": "Inspect accounts podaj (hosted demo on Workers Free) and hasparus (podaj Worker for Deploy to Cloudflare button testing). Use explicit account IDs. Authorize only these accounts and needed permissions. Deployments use Wrangler."
+    }
+  }
+}

@@ -1,0 +1,3 @@
+# Local Worker runtime secrets only. Do not put Cloudflare API credentials here.
+# Empty keeps localhost open. Set a local token only when testing authentication.
+PODAJ_API_AUTH_SECRET=

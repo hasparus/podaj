@@ -5,14 +5,17 @@ const API_ERROR_COPY: Record<string, string> = {
   "origin not allowed": "Sending isn't allowed from this page.",
   "payload too large": "That's too large to send.",
   "not ready": "Nothing has been shared to this link yet.",
-  "invalid write": "This compose link isn't valid.",
+  "invalid write": "This fill link isn't valid.",
   "already shared": "This link was already filled.",
-  locked: "This podaj has no instance token yet. Set PODAJ_TOKEN, then enter it here.",
-  unauthorized: "That instance token was refused.",
+  locked: "This instance isn't configured for private requests. Ask its owner to finish setup.",
+  unauthorized: "This fill link was refused. Ask for a new link from the CLI.",
+  "rate limited": "This instance has reached its limit. Try again later.",
+  "invalid recipient": "This link has an invalid recipient key. Ask for a new link.",
+  "invalid recipient key": "This link has an invalid recipient key. Ask for a new link.",
 };
 
 export const HOW_IT_WORKS =
-  "Values are locked in the browser with the recipient's public key before upload. Each link works once. The database keeps only the sealed bundle. Plaintext and your private key never leave the browser.";
+  "Names and values are encrypted here with the requesting CLI’s public key. Only its private key can open the bundle. The server stores ciphertext, not your variables.";
 
 const CRYPTO_JARGON =
   /PODAJ1|podaj version|expected PODAJ1 ciphertext|unsupported podaj version/iu;
@@ -24,7 +27,7 @@ export const userStatusText = (text: string): string => {
     return "Something went wrong.";
   }
   if (CRYPTO_JARGON.test(trimmed)) {
-    return "That key file didn't open this handoff.";
+    return "Couldn't encrypt this handoff.";
   }
   return trimmed;
 };
@@ -47,10 +50,11 @@ export const apiHandoffErrorText = (
   if (code.length > 0 && API_ERROR_COPY[code]) {
     return API_ERROR_COPY[code];
   }
-  if (code.length > 0) {
-    return `Couldn't send (${status}): ${code}.`;
-  }
-  return `Couldn't send (${status}).`;
+  if (status === 410) {return API_ERROR_COPY.gone;}
+  if (status === 401 || status === 403) {return API_ERROR_COPY.unauthorized;}
+  if (status === 429) {return "This instance has reached its limit. Try again later.";}
+  if (status === 503) {return "This instance is unavailable or not fully configured. Try again later.";}
+  return `Couldn't complete this request (${status}).`;
 };
 
 export const statusError = (text: string): { _tag: "Error"; text: string } => ({

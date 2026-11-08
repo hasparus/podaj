@@ -17,7 +17,7 @@ const bearerOk = (request: Request, expected: string): boolean => {
   return got === expected;
 };
 
-/** Local dev is open. Every other host needs PODAJ_TOKEN. The upstream URL is closed. */
+/** Local dev is open. Every other host needs PODAJ_API_AUTH_SECRET. The upstream URL is closed. */
 export const accessFor = (
   request: Request,
   token: string | undefined,

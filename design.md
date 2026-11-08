@@ -4,7 +4,9 @@ podaj is one dense column. one recipient key in the header. no environments list
 
 ## copy
 
-chrome is lowercase: podaj, key, value, add, create link, key file, share this once.
+chrome is lowercase: podaj, key, value, add, send, sent.
+
+the CLI creates the request link. the human browser only fills it and sends. no browser recipient creation, key generation, private-key picker, or decryption view.
 
 do not shout `PODAJ` or `KEY` in the interface. a placeholder may stay an env name such as `OPENAI_API_KEY`. that is a sample, not a label.
 
