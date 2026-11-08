@@ -1,8 +1,22 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { Effect } from "effect";
+import { afterEach, assert, describe, expect, expectTypeOf, it, vi } from "vitest";
 
-import { HandoffStore, type HandoffStoreConfig } from "../src/handoffs/store.js";
-import type { ReserveInput } from "../src/handoffs/protocol.js";
+import type { Env } from "../src/env.js";
+import { digest } from "../src/handoffs/capabilities.js";
+import { handleHandoffsApi } from "../src/handoffs/handler.js";
+import { HandoffParty } from "../src/handoffs/party.js";
+import { HandoffStore, type HandoffRow, type HandoffStoreConfig } from "../src/handoffs/store.js";
+import type {
+  ApprovalAttemptReply, ApproveCredentialReply, AuthorizeWriteReply, ConsumeReply,
+  CredentialStatusReply, FillReply, ReserveInput, ReserveReply, StatusReply,
+} from "../src/handoffs/protocol.js";
 import { sqliteStorage } from "./helpers/sqlite.js";
+
+vi.mock("cloudflare:workers", () => ({
+  DurableObject: class {
+    constructor(protected readonly ctx: DurableObjectState, protected readonly env: unknown) {}
+  },
+}));
 
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
@@ -19,15 +33,191 @@ const input = (value = 1, creatorHash: string | null = null): ReserveInput => ({
 const ciphertext = "PODAJ1.encrypted";
 const databases: ReturnType<typeof sqliteStorage>["database"][] = [];
 const setup = (config: HandoffStoreConfig = { PODAJ_MODE: "demo" }, start = 10 * DAY) => {
-  const { database, storage } = sqliteStorage();
+  const { database, storage, statements } = sqliteStorage();
   databases.push(database);
   let now = start;
   const store = new HandoffStore(storage, config, () => now);
   const counts = () => database.prepare("SELECT kind, subject, bucket, count FROM counters ORDER BY kind, subject, bucket").all();
-  return { database, storage, store, counts, advance: (ms: number) => { now += ms; }, now: () => now };
+  return { database, storage, statements, store, counts, advance: (ms: number) => { now += ms; }, now: () => now };
 };
 afterEach(() => {
   for (const database of databases.splice(0)) database.close();
+  vi.restoreAllMocks();
+});
+
+const socketFor = (id: string, expiresAt: number) => {
+  let attachment = { id, expiresAt };
+  return {
+    deserializeAttachment: vi.fn(() => attachment),
+    serializeAttachment: vi.fn((value: typeof attachment) => { attachment = value; }),
+    send: vi.fn(),
+    close: vi.fn(),
+  };
+};
+
+const partySetup = () => {
+  const { database, storage, statements } = sqliteStorage();
+  databases.push(database);
+  let alarm: number | null = null;
+  const sockets: ReturnType<typeof socketFor>[] = [];
+  const ctx = {
+    id: { equals: () => true },
+    storage: {
+      ...storage,
+      getAlarm: vi.fn(async () => alarm),
+      setAlarm: vi.fn(async (value: number) => { alarm = value; }),
+      deleteAlarm: vi.fn(async () => { alarm = null; }),
+    },
+    getWebSockets: vi.fn((id?: string) => sockets.filter((socket) => id === undefined || socket.deserializeAttachment().id === id)),
+    blockConcurrencyWhile: vi.fn(async (work: () => Promise<unknown>) => await work()),
+  };
+  const env = { HANDOFF_PARTY: { idFromName: () => "fixed-object" } };
+  const party = new HandoffParty(
+    ctx as unknown as DurableObjectState,
+    env as unknown as ConstructorParameters<typeof HandoffParty>[1],
+  );
+  return { party, ctx, database, statements, sockets, alarm: () => alarm };
+};
+
+describe("typed handoff contracts", () => {
+  it("keeps each method's literal statuses and concrete payloads", () => {
+    expectTypeOf<HandoffStore["reserve"]>().returns.toEqualTypeOf<ReserveReply>();
+    expectTypeOf<HandoffStore["authorizeWrite"]>().returns.toEqualTypeOf<AuthorizeWriteReply>();
+    expectTypeOf<HandoffStore["fill"]>().returns.toEqualTypeOf<FillReply>();
+    expectTypeOf<HandoffStore["consume"]>().returns.toEqualTypeOf<ConsumeReply>();
+    expectTypeOf<HandoffStore["status"]>().returns.toEqualTypeOf<StatusReply>();
+    expectTypeOf<HandoffStore["approvalAttempt"]>().returns.toEqualTypeOf<ApprovalAttemptReply>();
+    expectTypeOf<HandoffStore["approveCredential"]>().returns.toEqualTypeOf<ApproveCredentialReply>();
+    expectTypeOf<HandoffStore["credentialStatus"]>().returns.toEqualTypeOf<CredentialStatusReply>();
+    expectTypeOf<ReserveReply["status"]>().toEqualTypeOf<201 | 400 | 401 | 409 | 429>();
+    expectTypeOf<ConsumeReply["status"]>().toEqualTypeOf<200 | 401 | 404 | 410>();
+    expectTypeOf<Extract<ConsumeReply, { status: 200 }>["body"]["sealed"]>().toEqualTypeOf<string>();
+    expectTypeOf<{ status: 200; body: { sealed: null; recipientFingerprint: string } }>().not.toExtend<ConsumeReply>();
+    expectTypeOf<{ status: 200; body: { status: "gone" } }>().not.toExtend<StatusReply>();
+    expectTypeOf<{ status: 201; body: { id: string } }>().not.toExtend<ReserveReply>();
+    expectTypeOf<{ status: 201; body: { authorized: true } }>().not.toExtend<AuthorizeWriteReply>();
+    expectTypeOf<{ status: 202; body: { status: "approved" } }>().not.toExtend<CredentialStatusReply>();
+    expectTypeOf<Extract<HandoffRow, { state: "pending" }>["sealed"]>().toEqualTypeOf<null>();
+    expectTypeOf<Extract<HandoffRow, { state: "ready" }>["sealed"]>().toEqualTypeOf<string>();
+    expectTypeOf<Extract<HandoffRow, { state: "consumed" }>["sealed"]>().toEqualTypeOf<null>();
+  });
+
+  it("backs the row discriminant with SQLite CHECK constraints", () => {
+    const { store, database } = setup();
+    store.reserve(input());
+    expect(() => database.prepare("UPDATE handoffs SET state = 'ready' WHERE id = ?").run(input().id)).toThrow(/CHECK/);
+    expect(() => database.prepare("UPDATE handoffs SET sealed = ? WHERE id = ?").run(ciphertext, input().id)).toThrow(/CHECK/);
+    store.fill(input().id, input().writeHash, ciphertext);
+    expect(() => database.prepare("UPDATE handoffs SET state = 'consumed' WHERE id = ?").run(input().id)).toThrow(/CHECK/);
+    expect(store.consume(input().id, input().readHash)).toMatchObject({ status: 200, body: { sealed: ciphertext } });
+  });
+});
+
+describe("read-only RPCs and delivery maintenance", () => {
+  it.each(["pending", "ready", "consumed", "expired"] as const)("does no global maintenance or ciphertext reads for %s lookups", async (state) => {
+    let now = Date.UTC(2026, 10, 1);
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { party, ctx, database, statements } = partySetup();
+    const challenge = hex(500);
+    await party.approveCredential(challenge, fingerprint);
+    await party.reserve(input());
+    if (state === "ready" || state === "consumed") await party.fill(input().id, input().writeHash, ciphertext);
+    if (state === "consumed") await party.consume(input().id, input().readHash);
+    if (state === "expired") now += 2 * HOUR;
+    statements.length = 0;
+    ctx.blockConcurrencyWhile.mockClear();
+    ctx.getWebSockets.mockClear();
+    ctx.storage.getAlarm.mockClear();
+    ctx.storage.setAlarm.mockClear();
+    ctx.storage.deleteAlarm.mockClear();
+    expect((await party.status(input().id, input().subscribeHash)).status).toBe(state === "consumed" || state === "expired" ? 410 : 200);
+    expect((await party.status(input().id, input().readHash)).status).toBe(401);
+    expect((await party.status(hex(999, 32), input().subscribeHash)).status).toBe(410);
+    expect((await party.credentialStatus(challenge)).status).toBe(state === "expired" ? 202 : 200);
+    expect((await party.credentialStatus(hex(999))).status).toBe(202);
+    expect((await party.credentialStatus("invalid")).status).toBe(400);
+    expect(statements).toHaveLength(5);
+    expect(statements.every(({ query }) => /^SELECT\b/u.test(query))).toBe(true);
+    expect(statements.flatMap(({ columns }) => columns)).not.toContain("sealed");
+    expect(ctx.blockConcurrencyWhile).not.toHaveBeenCalled();
+    expect(ctx.getWebSockets).not.toHaveBeenCalled();
+    expect(ctx.storage.getAlarm).not.toHaveBeenCalled();
+    expect(ctx.storage.setAlarm).not.toHaveBeenCalled();
+    expect(ctx.storage.deleteAlarm).not.toHaveBeenCalled();
+    expect(database.prepare("SELECT COUNT(*) AS count FROM handoffs").get()?.count).toBe(1);
+  });
+
+  it("reconciles each subscribed slot once using only expiry metadata", async () => {
+    const { party, statements, sockets, alarm } = partySetup();
+    await party.reserve(input());
+    await party.fill(input().id, input().writeHash, ciphertext);
+    const deadline = Date.now() + 600_000;
+    sockets.push(socketFor(input().id, deadline), socketFor(input().id, deadline));
+    statements.length = 0;
+    await party.alarm();
+    const lookups = statements.filter(({ query }) => /FROM handoffs WHERE id/u.test(query));
+    expect(lookups).toHaveLength(1);
+    expect(lookups[0].columns).toEqual(["expires_at"]);
+    expect(statements.flatMap(({ columns }) => columns)).not.toContain("sealed");
+    expect(alarm()).toBe(deadline);
+  });
+
+  it("acknowledges consumption over HTTP and immediately notifies gone despite unavailable post-commit maintenance", async () => {
+    const { party, ctx, database, statements, sockets, alarm } = partySetup();
+    const readToken = hex(1234);
+    const slot = { ...input(), readHash: await digest(readToken) };
+    await party.reserve(slot);
+    await party.fill(slot.id, slot.writeHash, ciphertext);
+    const armed = alarm();
+    expect(armed).not.toBeNull();
+    const socket = socketFor(input().id, Date.now() + 600_000);
+    sockets.push(socket);
+    ctx.storage.getAlarm.mockRejectedValue(new Error("alarm storage unavailable"));
+    ctx.blockConcurrencyWhile.mockClear();
+    statements.length = 0;
+    const env = {
+      MAX_HANDOFF_BYTES: "32768",
+      HANDOFF_PARTY: { idFromName: () => "fixed-object", get: () => party },
+    } as unknown as Env;
+    const response = await Effect.runPromise(handleHandoffsApi(new Request(`https://podaj.test/api/handoffs/${slot.id}/consume`, {
+      method: "POST", headers: { Authorization: `Bearer ${readToken}` },
+    }), env));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ sealed: ciphertext, recipientFingerprint: fingerprint });
+    expect(socket.send).toHaveBeenCalledWith(JSON.stringify({ type: "gone" }));
+    expect(socket.close).toHaveBeenCalledWith(1000, "gone");
+    expect(alarm()).toBe(armed);
+    expect(ctx.blockConcurrencyWhile).not.toHaveBeenCalled();
+    expect(statements.map(({ query }) => query)).toEqual([
+      "SELECT read_hash, fingerprint, state, sealed, expires_at FROM handoffs WHERE id = ?",
+      "UPDATE handoffs SET state = 'consumed', sealed = NULL WHERE id = ?",
+    ]);
+    expect(database.prepare("SELECT state, sealed FROM handoffs").get()).toEqual({ state: "consumed", sealed: null });
+    expect((await party.consume(slot.id, slot.readHash)).status).toBe(410);
+    await expect(party.alarm()).rejects.toThrow("alarm storage unavailable");
+  });
+
+  it("does not suppress critical alarm scheduling failures during reservation", async () => {
+    const { party, ctx } = partySetup();
+    ctx.storage.setAlarm.mockRejectedValue(new Error("cannot arm cleanup"));
+    await expect(party.reserve(input())).rejects.toThrow("cannot arm cleanup");
+    expect(ctx.storage.setAlarm).toHaveBeenCalled();
+  });
+
+  it("cleans consumed tombstones on the already armed expiry alarm", async () => {
+    let now = Date.UTC(2026, 10, 1);
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { party, database, alarm } = partySetup();
+    await party.reserve(input());
+    await party.fill(input().id, input().writeHash, ciphertext);
+    await party.consume(input().id, input().readHash);
+    const armed = alarm();
+    assert(armed !== null);
+    now = armed;
+    await party.alarm();
+    expect(database.prepare("SELECT * FROM handoffs").all()).toEqual([]);
+    expect((await party.status(input().id, input().subscribeHash)).status).toBe(410);
+  });
 });
 
 describe("SQLite handoff state machine", () => {
@@ -81,6 +271,7 @@ describe("SQLite handoff state machine", () => {
     const { store, database, now } = setup();
     const reservation = store.reserve(input());
     expect(reservation).toEqual({ status: 201, body: { id: input().id, expiresAt: now() + 2 * HOUR, recipientFingerprint: fingerprint } });
+    assert(reservation.status === 201);
     expect(store.status(input().id, input().subscribeHash)).toEqual({ status: 200, body: { status: "pending", expiresAt: reservation.body.expiresAt } });
     expect(store.consume(input().id, input().readHash).status).toBe(404);
     expect(store.fill(input().id, input().writeHash, ciphertext).status).toBe(200);
@@ -127,10 +318,13 @@ describe("SQLite handoff state machine", () => {
     store.reserve(input());
     advance(HOUR);
     const filled = store.fill(input().id, input().writeHash, ciphertext);
+    assert(filled.status === 200);
     expect(filled.body.expiresAt).toBe(now() + 2 * HOUR);
     advance(HOUR);
     expect(store.fill(input().id, input().writeHash, "PODAJ1.other").status).toBe(409);
-    expect(store.status(input().id, input().subscribeHash).body.expiresAt).toBe(filled.body.expiresAt);
+    const status = store.status(input().id, input().subscribeHash);
+    assert(status.status === 200);
+    expect(status.body.expiresAt).toBe(filled.body.expiresAt);
     advance(HOUR);
     expect(store.fill(input().id, input().writeHash, ciphertext).status).toBe(410);
     expect(store.consume(input().id, input().readHash).status).toBe(410);
@@ -162,11 +356,11 @@ describe("SQLite handoff state machine", () => {
 
   it("clamps public byte and TTL overrides but supports private retention", () => {
     const demo = setup({ PODAJ_MODE: "demo", MAX_HANDOFF_BYTES: "1000000", HANDOFF_TTL_SECONDS: "86400" });
-    expect(demo.store.reserve(input()).body.expiresAt).toBe(demo.now() + 2 * HOUR);
+    expect(demo.store.reserve(input())).toMatchObject({ status: 201, body: { expiresAt: demo.now() + 2 * HOUR } });
     expect(demo.store.fill(input().id, input().writeHash, `PODAJ1.${"a".repeat(32762)}`).status).toBe(413);
     expect(demo.store.fill(input().id, input().writeHash, `PODAJ1.${"a".repeat(32761)}`).status).toBe(200);
     const privateInstance = setup({ PODAJ_MODE: "private", MAX_HANDOFF_BYTES: "40000", HANDOFF_TTL_SECONDS: "86400" });
-    expect(privateInstance.store.reserve(input()).body.expiresAt).toBe(privateInstance.now() + DAY);
+    expect(privateInstance.store.reserve(input())).toMatchObject({ status: 201, body: { expiresAt: privateInstance.now() + DAY } });
     expect(privateInstance.store.fill(input().id, input().writeHash, `PODAJ1.${"a".repeat(32762)}`).status).toBe(200);
   });
 
@@ -288,6 +482,7 @@ describe("bounded verification metadata and approvals", () => {
     const { store, counts, now, advance } = setup();
     const approved = store.approveCredential(hex(500), fingerprint);
     expect(approved).toEqual({ status: 200, body: { approved: true, expiresAt: now() + 2 * HOUR } });
+    assert(approved.status === 200);
     advance(HOUR);
     expect(store.approveCredential(hex(500), fingerprint)).toEqual(approved);
     expect(store.approveCredential(hex(500), hex(11)).status).toBe(409);

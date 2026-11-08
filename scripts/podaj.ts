@@ -15,6 +15,7 @@ import { spawnSync } from "node:child_process";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { packageRoot, packageTool } from "./package-paths.js";
 import { decryptHandoff } from "./decrypt-handoff.js";
 
@@ -52,7 +53,8 @@ wait   reserve a fill link, block until those keys are pasted, print them as JSO
   process.exit(2);
 };
 
-const answered = async (value: unknown): Promise<string> => {
+const answered = async (answer: Promise<string | symbol>): Promise<string> => {
+  const value = await answer;
   if (isCancel(value) || typeof value !== "string" || value.length === 0) {
     cancel("stopped");
     process.exit(0);
@@ -61,7 +63,7 @@ const answered = async (value: unknown): Promise<string> => {
 };
 
 const capture = (bin: string, args: string[], opts: { input?: string; redact?: string } = {}) => {
-  const result = spawnSync(bin, args, {
+  const result = spawnSync(process.execPath, [bin, ...args], {
     cwd: repoRoot,
     encoding: "utf8",
     input: opts.input,
@@ -78,8 +80,6 @@ const capture = (bin: string, args: string[], opts: { input?: string; redact?: s
   }
   return output;
 };
-
-const tool = packageTool;
 
 const runtimeConfig = () => {
   const file = readConfig(defaultConfigPath());
@@ -114,12 +114,12 @@ const init = async (argv: string[]) => {
   if (interactive) {
     intro("podaj");
   }
-  const wrangler = tool("wrangler");
+  const wrangler = packageTool("wrangler");
   await runInit(args, {
     askToken: () =>
       answered(
         password({
-          message: "Instance token",
+          message: "Paste instance token",
           validate: (value) =>
             value === undefined || value.length === 0
               ? "token is required"
@@ -200,17 +200,16 @@ const init = async (argv: string[]) => {
       if (clientBuilt(repoRoot)) {
         return;
       }
-      const vite = tool("vite");
-      if (!existsSync(vite)) {
+      if (!existsSync(join(repoRoot, "vite.config.ts"))) {
         throw new Error(
           "client build is missing. Reinstall podaj so dist/client ships with the package.",
         );
       }
-      capture(vite, ["build"]);
+      capture(packageTool("vite"), ["build"]);
     },
     isTTY: tty,
     login: () => {
-      const child = spawnSync(wrangler, ["login"], { stdio: "inherit" });
+      const child = spawnSync(process.execPath, [wrangler, "login"], { stdio: "inherit" });
       if (child.error !== undefined) {
         throw child.error;
       }
@@ -253,7 +252,7 @@ const init = async (argv: string[]) => {
         stage: workerStageDir(homedir()),
       }),
     whoami: () =>
-      spawnSync(wrangler, ["whoami"], { encoding: "utf8" }).status === 0,
+      spawnSync(process.execPath, [wrangler, "whoami"], { encoding: "utf8" }).status === 0,
     workersUrl,
   });
 };

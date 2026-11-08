@@ -1,8 +1,13 @@
 import { Effect } from "effect";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { Env } from "../src/env.js";
 import { digest, recipientFingerprint } from "../src/handoffs/capabilities.js";
-import type { Reservation, ReserveInput, ServiceReply } from "../src/handoffs/protocol.js";
+import type {
+  ApproveCredentialReply, AuthorizeWriteReply, ConsumeReply, CredentialStatusReply,
+  FillReply, Reservation, ReserveReply, StatusReply,
+} from "../src/handoffs/protocol.js";
+import type { HandoffParty } from "../src/handoffs/party.js";
+import { Approved, Consumed, CredentialApproved, CredentialPending, Filled, Reserved, Status } from "../src/handoffs/api.js";
 import { handleHandoffsApi } from "../src/handoffs/handler.js";
 import { CSP } from "../src/security.js";
 import { HandoffStore } from "../src/handoffs/store.js";
@@ -19,14 +24,14 @@ const sealed = `PODAJ1.${btoa(JSON.stringify({
 
 const setup = (overrides: Partial<Env> = {}) => {
   const service = {
-    reserve: vi.fn<(input: ReserveInput) => Promise<ServiceReply>>(async () => ({ status: 201, body: { id, expiresAt, recipientFingerprint: fingerprint } })),
-    authorizeWrite: vi.fn<(id: string, hash: string) => Promise<ServiceReply>>(async () => ({ status: 200, body: { authorized: true } })),
-    fill: vi.fn<(id: string, hash: string, sealed: string) => Promise<ServiceReply>>(async () => ({ status: 200, body: { id, expiresAt } })),
-    status: vi.fn(async (): Promise<ServiceReply> => ({ status: 200, body: { status: "ready", expiresAt } })),
-    consume: vi.fn(async () => ({ status: 200, body: { sealed, recipientFingerprint: fingerprint } })),
-    credentialStatus: vi.fn<(hash: string) => Promise<ServiceReply>>(async () => ({ status: 202, body: { status: "pending" } })),
-    approvalAttempt: vi.fn(async () => ({ status: 200, body: { allowed: true } })),
-    approveCredential: vi.fn(async () => ({ status: 200, body: { approved: true, expiresAt } })),
+    reserve: vi.fn<HandoffParty["reserve"]>(async () => ({ status: 201, body: { id, expiresAt, recipientFingerprint: fingerprint } })),
+    authorizeWrite: vi.fn<HandoffParty["authorizeWrite"]>(async () => ({ status: 200, body: { authorized: true } })),
+    fill: vi.fn<HandoffParty["fill"]>(async () => ({ status: 200, body: { id, expiresAt } })),
+    status: vi.fn<HandoffParty["status"]>(async () => ({ status: 200, body: { status: "ready", expiresAt } })),
+    consume: vi.fn<HandoffParty["consume"]>(async () => ({ status: 200, body: { sealed, recipientFingerprint: fingerprint } })),
+    credentialStatus: vi.fn<HandoffParty["credentialStatus"]>(async () => ({ status: 202, body: { status: "pending" } })),
+    approvalAttempt: vi.fn<HandoffParty["approvalAttempt"]>(async () => ({ status: 200, body: { allowed: true } })),
+    approveCredential: vi.fn<HandoffParty["approveCredential"]>(async () => ({ status: 200, body: { approved: true, expiresAt } })),
   };
   const namespace = { idFromName: vi.fn(() => "fixed-object"), get: vi.fn(() => service) };
   const env = {
@@ -67,6 +72,16 @@ const untouchedBody = () => {
 };
 
 describe("declarative HTTP routing", () => {
+  it("keeps RPC success payloads aligned with the HTTP schemas", () => {
+    expectTypeOf<Extract<ReserveReply, { status: 201 }>["body"]>().toEqualTypeOf<typeof Reserved.Type>();
+    expectTypeOf<Extract<FillReply, { status: 200 }>["body"]>().toEqualTypeOf<typeof Filled.Type>();
+    expectTypeOf<Extract<ConsumeReply, { status: 200 }>["body"]>().toEqualTypeOf<typeof Consumed.Type>();
+    expectTypeOf<Extract<StatusReply, { status: 200 }>["body"]>().toEqualTypeOf<typeof Status.Type>();
+    expectTypeOf<Extract<ApproveCredentialReply, { status: 200 }>["body"]>().toEqualTypeOf<typeof Approved.Type>();
+    expectTypeOf<Extract<CredentialStatusReply, { status: 200 }>["body"]>().toEqualTypeOf<typeof CredentialApproved.Type>();
+    expectTypeOf<Extract<CredentialStatusReply, { status: 202 }>["body"]>().toEqualTypeOf<typeof CredentialPending.Type>();
+  });
+
   it("provides isolated bindings to concurrent requests", async () => {
     const first = setup({ MAX_HANDOFF_BYTES: "2048" });
     const second = setup({ MAX_HANDOFF_BYTES: "4096" });
@@ -151,10 +166,11 @@ describe("declarative HTTP routing", () => {
   it.each([
     { status: 410, body: { status: "gone" }, expected: 410 },
     { status: 200, body: { authorized: false }, expected: 503 },
+    { status: 200, body: { authorized: "yes" }, expected: 503 },
     { status: 401, body: { unexpected: "refusal" }, expected: 503 },
   ])("does not touch the body for absent slots or malformed preflight replies: $status/$expected", async ({ status, body: replyBody, expected }) => {
     const { request, service } = setup();
-    service.authorizeWrite.mockResolvedValueOnce({ status, body: replyBody });
+    service.authorizeWrite.mockResolvedValueOnce({ status, body: replyBody } as unknown as AuthorizeWriteReply);
     const { body, pull, cancel } = untouchedBody();
     const response = await request(`/api/handoffs/${id}`, {
       method: "PUT", headers: json, body, duplex: "half",
@@ -354,6 +370,25 @@ describe("declarative HTTP routing", () => {
     }
   });
 
+  it("rejects malformed approval successes at the HttpApi response boundary", async () => {
+    const { request, service } = setup({ PODAJ_MODE: "demo", TURNSTILE_SITE_KEY: "site", TURNSTILE_SECRET_KEY: "secret", PUBLIC_API_LIMITER: { limit: async () => ({ success: true }) } });
+    const recipientPublicKey = await recipientKey();
+    const challenge = "d".repeat(64);
+    const cdata = await digest(`${challenge}.${await recipientFingerprint(recipientPublicKey)}`);
+    const siteverify = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(Response.json({
+      success: true, hostname: "podaj.test", action: "podaj-admission", cdata,
+    }));
+    service.approveCredential.mockResolvedValueOnce({ status: 200, body: { approved: false, expiresAt } } as unknown as ApproveCredentialReply);
+    try {
+      const response = await request("/api/demo/approve", {
+        method: "POST", headers: { "Content-Type": "application/json", "CF-Connecting-IP": "192.0.2.1" },
+        body: JSON.stringify({ recipientPublicKey, challenge, turnstileToken: "captcha" }),
+      });
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: "service unavailable" });
+    } finally { siteverify.mockRestore(); }
+  });
+
   it("preserves gone status without exposing ciphertext", async () => {
     const { request, service } = setup();
     service.status.mockResolvedValueOnce({ status: 410, body: { status: "gone" } });
@@ -362,10 +397,60 @@ describe("declarative HTTP routing", () => {
     expect(await response.json()).toEqual({ status: "gone" });
   });
 
-  it("checks successful RPC replies before returning them", async () => {
+  it.each([
+    { status: "unexpected", expiresAt },
+    { status: "gone" },
+    null,
+    { status: "ready", expiresAt: "not-a-number" },
+    { status: "ready", expiresAt, sealed: "must-not-leave-the-status-boundary" },
+  ])("rejects malformed RPC status successes at the HttpApi response boundary: %j", async (body) => {
     const { request, service } = setup();
-    service.status.mockResolvedValueOnce({ status: 200, body: { status: "unexpected", expiresAt } });
+    service.status.mockResolvedValueOnce({ status: 200, body } as unknown as StatusReply);
     const response = await request(`/api/handoffs/${id}/status`, { headers: bearer });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "service unavailable" });
+  });
+
+  it("rejects malformed reservation successes at the HttpApi response boundary", async () => {
+    const { request, service } = setup();
+    service.reserve.mockResolvedValueOnce({
+      status: 201, body: { id, expiresAt, recipientFingerprint: null },
+    } as unknown as ReserveReply);
+    const response = await request("/api/handoffs/reserve", {
+      method: "POST", headers: { ...json, Authorization: "Bearer owner" },
+      body: JSON.stringify({ recipientPublicKey: await recipientKey() }),
+    });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "service unavailable" });
+  });
+
+  it("rejects malformed fill successes at the HttpApi response boundary", async () => {
+    const { request, service } = setup();
+    service.fill.mockResolvedValueOnce({ status: 200, body: { id, expiresAt: null } } as unknown as FillReply);
+    const response = await request(`/api/handoffs/${id}`, { method: "PUT", headers: json, body: JSON.stringify({ sealed }) });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "service unavailable" });
+  });
+
+  it.each([
+    { sealed: null, recipientFingerprint: fingerprint },
+    { sealed, recipientFingerprint: "not-a-fingerprint" },
+    { sealed, recipientFingerprint: fingerprint, extra: true },
+  ])("rejects malformed consume successes at the HttpApi response boundary: %j", async (body) => {
+    const { request, service } = setup();
+    service.consume.mockResolvedValueOnce({ status: 200, body } as unknown as ConsumeReply);
+    const response = await request(`/api/handoffs/${id}/consume`, { method: "POST", headers: bearer });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "service unavailable" });
+  });
+
+  it.each([
+    { status: 200, body: { status: "approved", expiresAt } },
+    { status: 202, body: { status: "pending", recipientFingerprint: fingerprint } },
+  ])("rejects malformed credential successes at the HttpApi response boundary: %j", async (result) => {
+    const { request, service } = setup({ PODAJ_MODE: "demo" });
+    service.credentialStatus.mockResolvedValueOnce(result as unknown as CredentialStatusReply);
+    const response = await request("/api/demo/status", { headers: bearer });
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ error: "service unavailable" });
   });

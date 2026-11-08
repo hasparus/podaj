@@ -116,7 +116,7 @@ const SendHandoff = DefineCommand("SendHandoff", {
   messages: [Message.SucceededSend, Message.FailedSend],
   execute: ({ handoffId, writeToken, publicKeyPem, maxHandoffBytes, rows }) => Effect.tryPromise({
     try: async () => {
-      const sealed = await seal(toPayload(rows), publicKeyPem, "default");
+      const sealed = await seal(toPayload(rows), publicKeyPem);
       if (new TextEncoder().encode(sealed).byteLength > maxHandoffBytes) { throw new Error("That's too large to send."); }
       const response = await fetch(`/api/handoffs/${handoffId}`, {
         method: "PUT",

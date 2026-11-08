@@ -2,7 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { isDirect, packageRoot } from "./package-paths.js";
+import { isDirect, packageRoot, packageTool } from "./package-paths.js";
 import { parseEnv } from "node:util";
 
 const ACCOUNTS = { test: "hasparus", demo: "podaj" };
@@ -59,12 +59,12 @@ const main = (argv: string[]) => {
     const config = join(scratch, "wrangler.json");
     writeFileSync(config, JSON.stringify({ account_id: selected.accountId, name: selected.workerName }), { mode: 0o600 });
     const command = [
-      join(root, "node_modules", "wrangler", "bin", "wrangler.js"),
+      packageTool("wrangler"),
       ...args, "--config", config, "--env-file", profile,
       ...(args[0] === "secret" ? ["--name", selected.workerName] : []),
     ];
     process.stderr.write(`Cloudflare target: ${selected.accountName} / ${selected.workerName} (${target}).\n`);
-    const result = spawnSync("node", command, { cwd: root, env: selected.env, stdio: "inherit" });
+    const result = spawnSync(process.execPath, command, { cwd: root, env: selected.env, stdio: "inherit" });
     if (result.error) throw new Error("could not start the installed Wrangler");
     process.exitCode = result.status ?? 1;
   } finally {

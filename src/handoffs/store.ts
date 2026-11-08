@@ -3,8 +3,17 @@ import {
   CAPABILITY,
   DEMO_LIMITS,
   HANDOFF_ID,
+  type ApprovalAttemptReply,
+  type ApproveCredentialReply,
+  type AuthorizeWriteReply,
+  type ConsumeReply,
+  type CredentialStatusReply,
+  type FailureReply,
+  type FillReply,
+  type GoneReply,
   type ReserveInput,
-  type ServiceReply,
+  type ReserveReply,
+  type StatusReply,
 } from "./protocol.js";
 
 const DAY = 86_400_000;
@@ -17,21 +26,23 @@ export type HandoffStoreConfig = {
   HANDOFF_TTL_SECONDS?: string;
   MAX_HANDOFF_BYTES?: string;
 };
-type Handoff = {
+/** The handoffs CHECK constraint guarantees this state/ciphertext relationship. */
+type HandoffState =
+  | { state: "pending"; sealed: null }
+  | { state: "ready"; sealed: string }
+  | { state: "consumed"; sealed: null };
+export type HandoffRow = {
   id: string;
   fingerprint: string;
   write_hash: string;
   read_hash: string;
   subscribe_hash: string;
-  state: "pending" | "ready" | "consumed";
-  sealed: string | null;
   expires_at: number;
-};
+} & HandoffState;
 type Credential = { fingerprint: string; expires_at: number };
-const reply = (status: number, body: ServiceReply["body"]): ServiceReply => ({ status, body });
-const gone = (): ServiceReply => reply(410, { status: "gone" });
-const unauthorized = (): ServiceReply => reply(401, { error: "unauthorized" });
-const exhausted = (): ServiceReply => reply(429, { error: "limit reached" });
+const gone = (): GoneReply => ({ status: 410, body: { status: "gone" } });
+const unauthorized = (): FailureReply<401> => ({ status: 401, body: { error: "unauthorized" } });
+const exhausted = (): FailureReply<429> => ({ status: 429, body: { error: "limit reached" } });
 
 /** All authoritative reads and mutations are synchronous SQLite transactions. */
 export class HandoffStore {
@@ -76,8 +87,10 @@ export class HandoffStore {
     });
   }
 
-  private handoff(id: string): Handoff | undefined {
-    return this.storage.sql.exec<Handoff>("SELECT * FROM handoffs WHERE id = ?", id).toArray()[0];
+  private writableHandoff(id: string) {
+    return this.storage.sql.exec<Pick<HandoffRow, "write_hash" | "state" | "expires_at">>(
+      "SELECT write_hash, state, expires_at FROM handoffs WHERE id = ?", id,
+    ).toArray().at(0);
   }
 
   private credential(challenge: string): Credential | undefined {
@@ -120,18 +133,20 @@ export class HandoffStore {
 
   activeExpiry(id: string): number | null {
     return this.storage.transactionSync(() => {
-      const row = this.handoff(id);
-      return row && row.state !== "consumed" && row.expires_at > this.now() ? row.expires_at : null;
+      const row = this.storage.sql.exec<{ expires_at: number }>(
+        "SELECT expires_at FROM handoffs WHERE id = ? AND state != 'consumed' AND expires_at > ?", id, this.now(),
+      ).toArray().at(0);
+      return row?.expires_at ?? null;
     });
   }
 
-  reserve(input: ReserveInput): ServiceReply {
+  reserve(input: ReserveInput): ReserveReply {
     if (!HANDOFF_ID.test(input.id) || !CAPABILITY.test(input.recipientFingerprint) ||
       !CAPABILITY.test(input.writeHash) || !CAPABILITY.test(input.readHash) ||
       !CAPABILITY.test(input.subscribeHash) ||
       new Set([input.writeHash, input.readHash, input.subscribeHash]).size !== 3 ||
       (input.creatorHash !== null && !CAPABILITY.test(input.creatorHash))) {
-      return reply(400, { error: "invalid reservation" });
+      return { status: 400, body: { error: "invalid reservation" } };
     }
     return this.storage.transactionSync(() => {
       const now = this.now();
@@ -143,7 +158,9 @@ export class HandoffStore {
           return unauthorized();
         }
       }
-      if (this.handoff(input.id)) return reply(409, { error: "already exists" });
+      if (this.storage.sql.exec<{ id: string }>("SELECT id FROM handoffs WHERE id = ?", input.id).toArray().length > 0) {
+        return { status: 409, body: { error: "already exists" } };
+      }
       const live = this.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM handoffs WHERE state != 'consumed'").toArray()[0].count;
       if (live >= DEMO_LIMITS.liveHandoffs ||
         this.count("reserve", "", day) >= DEMO_LIMITS.reservationsPerDay ||
@@ -157,60 +174,62 @@ export class HandoffStore {
       input.writeHash, input.readHash, input.subscribeHash, expiresAt);
       this.increment("reserve", "", day);
       if (input.creatorHash !== null) this.increment("actor", input.creatorHash, day);
-      return reply(201, { id: input.id, expiresAt, recipientFingerprint: input.recipientFingerprint });
+      return { status: 201, body: { id: input.id, expiresAt, recipientFingerprint: input.recipientFingerprint } };
     });
   }
 
   /** Read-only preflight; fill must revalidate after the request body arrives. */
-  authorizeWrite(id: string, writeHash: string): ServiceReply {
+  authorizeWrite(id: string, writeHash: string): AuthorizeWriteReply {
     return this.storage.transactionSync(() => {
-      const row = this.storage.sql.exec<Pick<Handoff, "write_hash" | "state" | "expires_at">>(
-        "SELECT write_hash, state, expires_at FROM handoffs WHERE id = ?", id,
-      ).toArray().at(0);
+      const row = this.writableHandoff(id);
       if (!CAPABILITY.test(writeHash) || (row && row.write_hash !== writeHash)) return unauthorized();
       if (!row || row.expires_at <= this.now()) return gone();
-      if (row.state !== "pending") return reply(409, { error: "already filled" });
-      return reply(200, { authorized: true });
+      if (row.state !== "pending") return { status: 409, body: { error: "already filled" } };
+      return { status: 200, body: { authorized: true } };
     });
   }
 
-  fill(id: string, writeHash: string, sealed: string): ServiceReply {
+  fill(id: string, writeHash: string, sealed: string): FillReply {
     return this.storage.transactionSync(() => {
-      const row = this.handoff(id);
+      const row = this.writableHandoff(id);
       if (!CAPABILITY.test(writeHash) || (row && row.write_hash !== writeHash)) return unauthorized();
       const now = this.now();
       if (!row || row.expires_at <= now) return gone();
-      if (row.state !== "pending") return reply(409, { error: "already filled" });
-      if (typeof sealed !== "string" || !sealed.startsWith("PODAJ1.")) return reply(400, { error: "invalid ciphertext" });
-      if (new TextEncoder().encode(sealed).byteLength > this.maxBytes) return reply(413, { error: "ciphertext too large" });
+      if (row.state !== "pending") return { status: 409, body: { error: "already filled" } };
+      if (typeof sealed !== "string" || !sealed.startsWith("PODAJ1.")) return { status: 400, body: { error: "invalid ciphertext" } };
+      if (new TextEncoder().encode(sealed).byteLength > this.maxBytes) return { status: 413, body: { error: "ciphertext too large" } };
       const expiresAt = now + this.ttlMs;
       this.storage.sql.exec("UPDATE handoffs SET state = 'ready', sealed = ?, expires_at = ? WHERE id = ?", sealed, expiresAt, id);
-      return reply(200, { id, expiresAt });
+      return { status: 200, body: { id, expiresAt } };
     });
   }
 
-  consume(id: string, readHash: string): ServiceReply {
+  consume(id: string, readHash: string): ConsumeReply {
     return this.storage.transactionSync(() => {
-      const row = this.handoff(id);
+      const row = this.storage.sql.exec<Pick<HandoffRow, "read_hash" | "fingerprint" | "expires_at"> & HandoffState>(
+        "SELECT read_hash, fingerprint, state, sealed, expires_at FROM handoffs WHERE id = ?", id,
+      ).toArray().at(0);
       if (!CAPABILITY.test(readHash) || (row && row.read_hash !== readHash)) return unauthorized();
       if (!row || row.expires_at <= this.now() || row.state === "consumed") return gone();
-      if (row.state === "pending") return reply(404, { error: "not ready" });
+      if (row.state === "pending") return { status: 404, body: { error: "not ready" } };
       this.storage.sql.exec("UPDATE handoffs SET state = 'consumed', sealed = NULL WHERE id = ?", id);
-      return reply(200, { sealed: row.sealed, recipientFingerprint: row.fingerprint });
+      return { status: 200, body: { sealed: row.sealed, recipientFingerprint: row.fingerprint } };
     });
   }
 
-  status(id: string, subscribeHash: string): ServiceReply {
+  status(id: string, subscribeHash: string): StatusReply {
     return this.storage.transactionSync(() => {
-      const row = this.handoff(id);
+      const row = this.storage.sql.exec<Pick<HandoffRow, "subscribe_hash" | "state" | "expires_at">>(
+        "SELECT subscribe_hash, state, expires_at FROM handoffs WHERE id = ?", id,
+      ).toArray().at(0);
       if (!CAPABILITY.test(subscribeHash) || (row && row.subscribe_hash !== subscribeHash)) return unauthorized();
       if (!row || row.expires_at <= this.now() || row.state === "consumed") return gone();
-      return reply(200, { status: row.state, expiresAt: row.expires_at });
+      return { status: 200, body: { status: row.state, expiresAt: row.expires_at } };
     });
   }
 
-  approvalAttempt(ipHash: string): ServiceReply {
-    if (!CAPABILITY.test(ipHash)) return reply(400, { error: "invalid IP digest" });
+  approvalAttempt(ipHash: string): ApprovalAttemptReply {
+    if (!CAPABILITY.test(ipHash)) return { status: 400, body: { error: "invalid IP digest" } };
     return this.storage.transactionSync(() => {
       const now = this.now();
       const day = Math.floor(now / DAY) * DAY;
@@ -220,35 +239,35 @@ export class HandoffStore {
         this.count("ip", ipHash, minute) >= DEMO_LIMITS.approvalAttemptsPerMinutePerIp) return exhausted();
       this.increment("attempt", "", day);
       this.increment("ip", ipHash, minute);
-      return reply(200, { allowed: true });
+      return { status: 200, body: { allowed: true } };
     });
   }
 
-  approveCredential(challenge: string, fingerprint: string): ServiceReply {
-    if (!CAPABILITY.test(challenge) || !CAPABILITY.test(fingerprint)) return reply(400, { error: "invalid credential" });
+  approveCredential(challenge: string, fingerprint: string): ApproveCredentialReply {
+    if (!CAPABILITY.test(challenge) || !CAPABILITY.test(fingerprint)) return { status: 400, body: { error: "invalid credential" } };
     return this.storage.transactionSync(() => {
       const now = this.now();
       const day = Math.floor(now / DAY) * DAY;
       this.purge(now);
       const existing = this.credential(challenge);
       if (existing) {
-        if (existing.fingerprint !== fingerprint) return reply(409, { error: "recipient mismatch" });
-        return reply(200, { approved: true, expiresAt: existing.expires_at });
+        if (existing.fingerprint !== fingerprint) return { status: 409, body: { error: "recipient mismatch" } };
+        return { status: 200, body: { approved: true, expiresAt: existing.expires_at } };
       }
       if (this.count("approve", "", day) >= DEMO_LIMITS.approvalsPerDay) return exhausted();
       const expiresAt = now + CREDENTIAL_TTL;
       this.storage.sql.exec("INSERT INTO credentials(challenge, fingerprint, expires_at) VALUES (?, ?, ?)", challenge, fingerprint, expiresAt);
       this.increment("approve", "", day);
-      return reply(200, { approved: true, expiresAt });
+      return { status: 200, body: { approved: true, expiresAt } };
     });
   }
 
-  credentialStatus(challenge: string): ServiceReply {
-    if (!CAPABILITY.test(challenge)) return reply(400, { error: "invalid credential" });
+  credentialStatus(challenge: string): CredentialStatusReply {
+    if (!CAPABILITY.test(challenge)) return { status: 400, body: { error: "invalid credential" } };
     return this.storage.transactionSync(() => {
       const credential = this.credential(challenge);
-      if (!credential || credential.expires_at <= this.now()) return reply(202, { status: "pending" });
-      return reply(200, { status: "approved", expiresAt: credential.expires_at, recipientFingerprint: credential.fingerprint });
+      if (!credential || credential.expires_at <= this.now()) return { status: 202, body: { status: "pending" } };
+      return { status: 200, body: { status: "approved", expiresAt: credential.expires_at, recipientFingerprint: credential.fingerprint } };
     });
   }
 }

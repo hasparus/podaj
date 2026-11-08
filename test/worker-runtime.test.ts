@@ -67,7 +67,7 @@ beforeAll(async () => {
   demoRuntime = create(true);
   runtime = privateRuntime;
   await Promise.all([privateRuntime.ready, demoRuntime.ready]);
-  sealed = await seal({ vars: [{ key: PRIVATE_NAME, value: PRIVATE_VALUE }] }, pair.publicKey, "default");
+  sealed = await seal({ vars: [{ key: PRIVATE_NAME, value: PRIVATE_VALUE }] }, pair.publicKey);
 }, 30_000);
 beforeEach(async () => { runtime = privateRuntime; verificationCalls = 0; await send("/__test/reset"); });
 afterAll(async () => { await Promise.all([privateRuntime?.dispose(), demoRuntime?.dispose()]); });

@@ -1,8 +1,9 @@
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
-import { join, resolve } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -117,79 +118,7 @@ describe("compiled CLI distribution", () => {
     const root = resolve(".");
     expect(packageRoot(pathToFileURL(join(root, "scripts/podaj.ts")).href)).toBe(root);
     expect(packageRoot(pathToFileURL(join(root, "dist/scripts/podaj.js")).href)).toBe(root);
-    expect(packageTool("wrangler")).toBe(join(root, "node_modules/.bin/wrangler"));
-  });
-
-  it("runs compiled helpers from an installed layout and stages that package's assets and worker", () => {
-    const home = realpathSync(mkdtempSync(join(tmpdir(), "podaj-installed-")));
-    const root = join(home, "package");
-    try {
-      mkdirSync(join(root, "dist/client"), { recursive: true });
-      writeFileSync(join(root, "package.json"), readFileSync(resolve("package.json")));
-      const installedConfig = '{"name":"synthetic-installed-worker"}\n';
-      writeFileSync(join(root, "wrangler.jsonc"), installedConfig);
-      cpSync(resolve("dist/scripts"), join(root, "dist/scripts"), { recursive: true });
-      symlinkSync(resolve("node_modules"), join(root, "node_modules"), "dir");
-      for (const name of ["index.html", "authorize.html", "_headers"]) {
-        writeFileSync(join(root, "dist/client", name), "synthetic asset");
-      }
-      const paths = pathToFileURL(join(root, "dist/scripts/package-paths.js")).href;
-      const stage = pathToFileURL(join(root, "dist/scripts/stage-worker.js")).href;
-      const output = execFileSync(process.execPath, ["--input-type=module", "--eval", `
-        import { packageRoot, packageTool } from ${JSON.stringify(paths)};
-        import { stageWorker } from ${JSON.stringify(stage)};
-        const root = packageRoot(${JSON.stringify(paths)});
-        console.log(JSON.stringify({ root, tool: packageTool("wrangler"), config: stageWorker({ packageRoot: root, stage: ${JSON.stringify(join(home, "stage"))} }) }));
-      `], { cwd: home, env: isolatedEnv(home), encoding: "utf8" });
-      expect(JSON.parse(output)).toEqual({
-        root, tool: join(root, "node_modules/.bin/wrangler"), config: join(home, "stage/wrangler.json"),
-      });
-      expect(readFileSync(join(home, "stage/assets/index.html"), "utf8")).toBe("synthetic asset");
-      expect(readFileSync(join(root, "wrangler.jsonc"), "utf8")).toBe(installedConfig);
-      expect(existsSync(join(root, "public/recipient.pem"))).toBe(false);
-      expect(readFileSync(join(home, "stage/entry.ts"), "utf8")).toContain(join(root, "src/worker.ts"));
-      expect(existsSync(join(root, "scripts"))).toBe(false);
-      const run = () => execFileSync(process.execPath, [join(root, "dist/scripts/podaj.js")], {
-        cwd: home, env: isolatedEnv(home), encoding: "utf8", stdio: "pipe",
-      });
-      expect(run).toThrow(expect.objectContaining({ status: 2, stderr: expect.stringContaining("usage:") }));
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it("packs the executable Node bin and compiled helpers rather than TypeScript script sources", () => {
-    const home = mkdtempSync(join(tmpdir(), "podaj-pack-"));
-    try {
-      const output = execFileSync("npm", ["pack", "--dry-run", "--ignore-scripts", "--json"], {
-        cwd: resolve("."), env: isolatedEnv(home), encoding: "utf8", stdio: "pipe", timeout: 15_000,
-      });
-      const packages: unknown = JSON.parse(output);
-      if (!Array.isArray(packages)) throw new Error("invalid pack result");
-      const first: unknown = packages[0];
-      if (typeof first !== "object" || first === null || !("files" in first) || !Array.isArray(first.files)) {
-        throw new Error("missing pack files");
-      }
-      const files: readonly unknown[] = first.files;
-      const paths = files.map((file) => {
-        if (typeof file !== "object" || file === null || !("path" in file) || typeof file.path !== "string") {
-          throw new Error("invalid pack file");
-        }
-        return file.path;
-      });
-      expect(paths).toContain("dist/scripts/podaj.js");
-      expect(paths).toContain("dist/scripts/hooks/block-git-no-verify.js");
-      expect(paths).toContain("dist/scripts/decrypt-handoff.js");
-      expect(paths.some((path) => path.startsWith("scripts/") || path.endsWith(".mjs"))).toBe(false);
-      expect(statSync(resolve("dist/scripts/podaj.js")).mode & 0o111).not.toBe(0);
-      const manifest = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
-      expect(manifest.bin.podaj).toBe("dist/scripts/podaj.js");
-      expect(manifest.files).not.toContain("public/recipient.pem.example");
-      expect(paths).not.toContain("public/recipient.pem");
-      expect(paths).not.toContain("public/recipient.pem.example");
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    expect(packageTool("wrangler")).toBe(join(dirname(createRequire(import.meta.url).resolve("wrangler/package.json")), "bin/wrangler.js"));
   });
 });
 

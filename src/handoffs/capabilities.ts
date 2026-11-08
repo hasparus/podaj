@@ -1,3 +1,4 @@
+import { parsePodaj1Envelope } from "../crypto/envelope.js";
 import { HandoffsApiError } from "./errors.js";
 import { CAPABILITY } from "./protocol.js";
 
@@ -52,18 +53,8 @@ export const recipientFingerprint = async (pem: string): Promise<string> => {
 
 export const validSealedEnvelope = (sealed: string): boolean => {
   try {
-    if (!sealed.startsWith("PODAJ1.")) return false;
-    const bytes = decodeBase64(sealed.slice(7));
-    const envelope: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-    if (typeof envelope !== "object" || envelope === null || Array.isArray(envelope)) return false;
-    if (Object.keys(envelope).toSorted().join(",") !== "ciphertext,env,iv,v,wrappedKey") return false;
-    if (!("v" in envelope) || envelope.v !== 1 || !("env" in envelope) || envelope.env !== "default") return false;
-    if (!("iv" in envelope) || typeof envelope.iv !== "string" || decodeBase64(envelope.iv).length !== 12) return false;
-    if (!("wrappedKey" in envelope) || typeof envelope.wrappedKey !== "string") return false;
-    const wrappedLength = decodeBase64(envelope.wrappedKey).length;
-    if (wrappedLength < 256 || wrappedLength > 512) return false;
-    if (!("ciphertext" in envelope) || typeof envelope.ciphertext !== "string") return false;
-    return decodeBase64(envelope.ciphertext).length >= 16;
+    parsePodaj1Envelope(sealed);
+    return true;
   } catch {
     return false;
   }

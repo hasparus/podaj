@@ -1,50 +1,54 @@
-import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { parse, type ParseError } from "jsonc-parser";
 
 export const workerStageDir = (home: string) =>
   join(home, ".local", "share", "podaj", "worker");
 
+type WorkerConfig = Record<string, unknown> & {
+  main: string;
+  assets: Record<string, unknown> & { directory: string };
+};
+
+const workerConfig = (root: string): WorkerConfig => {
+  const errors: ParseError[] = [];
+  const value: unknown = parse(readFileSync(join(root, "wrangler.jsonc"), "utf8"), errors, { allowTrailingComma: true });
+  if (errors.length > 0 || typeof value !== "object" || value === null || Array.isArray(value) ||
+    !("main" in value) || typeof value.main !== "string" || value.main.length === 0 ||
+    !("assets" in value) || typeof value.assets !== "object" || value.assets === null || Array.isArray(value.assets) ||
+    !("directory" in value.assets) || typeof value.assets.directory !== "string" || value.assets.directory.length === 0) {
+    throw new Error("wrangler.jsonc must configure a worker main and assets.directory");
+  }
+  return value as WorkerConfig;
+};
+
+const built = (client: string) => ["index.html", "authorize.html", "_headers"]
+  .every((file) => existsSync(join(client, file)));
+
 export const clientBuilt = (packageRoot: string) =>
-  ["index.html", "authorize.html", "_headers"].every((file) =>
-    existsSync(join(packageRoot, "dist", "client", file)));
+  built(resolve(packageRoot, workerConfig(packageRoot).assets.directory));
 
 export const stageWorker = ({ packageRoot, stage }: { packageRoot: string; stage: string }) => {
-  const client = join(packageRoot, "dist", "client");
-  if (!clientBuilt(packageRoot)) {
-    throw new Error(`missing client build at ${client}`);
+  const config = workerConfig(packageRoot);
+  const client = resolve(packageRoot, config.assets.directory);
+  if (!built(client)) throw new Error(`missing client build at ${client}`);
+  const worker = resolve(packageRoot, config.main);
+  if (!existsSync(worker) || !statSync(worker).isFile()) {
+    throw new Error(`missing worker entry at ${worker}`);
   }
   rmSync(stage, { recursive: true, force: true });
   mkdirSync(stage, { recursive: true, mode: 0o700 });
-  const assets = join(stage, "assets");
-  cpSync(client, assets, {
+  cpSync(client, join(stage, "assets"), {
     recursive: true,
     filter: (source) => source !== join(client, "recipient.pem") && source !== join(client, "recipient.pem.example"),
   });
-  const worker = join(packageRoot, "src", "worker.ts");
-  writeFileSync(
-    join(stage, "entry.ts"),
-    `export { default, HandoffParty } from ${JSON.stringify(worker)};\n`,
-  );
-  const config = {
-    assets: {
-      binding: "ASSETS",
-      directory: "assets",
-      run_worker_first: ["/", "/s/*", "/api/*", "/parties/*", "/authorize", "/authorize/", "/authorize.html"],
-    },
-    compatibility_date: "2025-10-11",
-    durable_objects: {
-      bindings: [{ class_name: "HandoffParty", name: "HANDOFF_PARTY" }],
-    },
-    main: "entry.ts",
-    migrations: [
-      { new_sqlite_classes: ["HandoffParty"], tag: "v1-handoff-party" },
-    ],
-    name: "podaj",
-    observability: { enabled: false },
-    ratelimits: [{ name: "PUBLIC_API_LIMITER", namespace_id: "1001", simple: { limit: 60, period: 60 } }],
-    vars: { PODAJ_MODE: "private", MAX_HANDOFF_BYTES: "32768", HANDOFF_TTL_SECONDS: "7200" },
-  };
+  writeFileSync(join(stage, "entry.ts"),
+    `export { default } from ${JSON.stringify(worker)};\nexport * from ${JSON.stringify(worker)};\n`);
   const configPath = join(stage, "wrangler.json");
-  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  writeFileSync(configPath, `${JSON.stringify({
+    ...config,
+    main: "entry.ts",
+    assets: { ...config.assets, directory: "assets" },
+  }, null, 2)}\n`);
   return configPath;
 };

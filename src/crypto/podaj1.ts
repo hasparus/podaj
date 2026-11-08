@@ -1,16 +1,8 @@
+import { encodePodaj1Envelope } from "./envelope.js";
+
 export type EnvVar = { key: string; value: string };
 
 export type HandoffVariables = { vars: EnvVar[] };
-
-const PREFIX = "PODAJ1.";
-
-type Podaj1Envelope = {
-  v: 1;
-  env: string;
-  iv: string;
-  ciphertext: string;
-  wrappedKey: string;
-};
 
 const b64 = (bytes: Uint8Array): string =>
   btoa(String.fromCharCode(...bytes));
@@ -74,7 +66,6 @@ export const validateRecipientPublicKey = async (pem: string): Promise<void> => 
 export async function seal(
   payload: HandoffVariables,
   publicKeyPem: string,
-  env: string,
 ): Promise<string> {
   const pubKey = await crypto.subtle.importKey(
     "spki",
@@ -101,56 +92,9 @@ export async function seal(
     pubKey,
     rawAes,
   );
-  const envelope: Podaj1Envelope = {
-    v: 1,
-    env,
-    iv: b64(iv),
-    ciphertext: b64(new Uint8Array(ctBuf)),
-    wrappedKey: b64(new Uint8Array(ekBuf)),
-  };
-  return PREFIX + btoa(JSON.stringify(envelope));
-}
-
-export const importPrivateKey = (pem: string): Promise<CryptoKey> =>
-  crypto.subtle.importKey(
-    "pkcs8",
-    owned(pemBody(pem, "PRIVATE KEY")).buffer,
-    { name: "RSA-OAEP", hash: "SHA-256" },
-    false,
-    ["decrypt"],
-  );
-
-export async function open(
-  sealed: string,
-  privateKey: string | CryptoKey,
-): Promise<{ env: string; payload: HandoffVariables }> {
-  if (!sealed.startsWith(PREFIX)) {
-    throw new Error("expected PODAJ1 ciphertext");
-  }
-  const envelope = JSON.parse(atob(sealed.slice(PREFIX.length))) as Podaj1Envelope;
-  if (envelope.v !== 1) throw new Error("unsupported podaj version");
-  const priv = typeof privateKey === "string"
-    ? await importPrivateKey(privateKey)
-    : privateKey;
-  const rawAes = await crypto.subtle.decrypt(
-    { name: "RSA-OAEP" },
-    priv,
-    owned(b64dec(envelope.wrappedKey)),
-  );
-  const aesKey = await crypto.subtle.importKey(
-    "raw",
-    rawAes,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["decrypt"],
-  );
-  const plainBuf = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: owned(b64dec(envelope.iv)) },
-    aesKey,
-    owned(b64dec(envelope.ciphertext)),
-  );
-  const payload = JSON.parse(
-    new TextDecoder().decode(plainBuf),
-  ) as HandoffVariables;
-  return { env: envelope.env, payload };
+  return encodePodaj1Envelope({
+    iv,
+    ciphertext: new Uint8Array(ctBuf),
+    wrappedKey: new Uint8Array(ekBuf),
+  });
 }

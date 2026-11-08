@@ -65,14 +65,14 @@ export const HandoffsApi = HttpApi.make("podaj").add(
       payload: ReserveBody, success: Reservation, error: errors,
     }),
     HttpApiEndpoint.put("fill", "/api/handoffs/:id", {
-      params: { id: HandoffId }, payload: FillBody, success: [Filled, Gone], error: errors,
+      params: { id: HandoffId }, payload: FillBody, success: Filled, error: [...errors, Gone],
     }).middleware(CapabilityPolicy),
     HttpApiEndpoint.get("status", "/api/handoffs/:id/status", {
-      params: { id: HandoffId }, success: [Status, Gone], error: errors,
+      params: { id: HandoffId }, success: Status, error: [...errors, Gone],
     }).middleware(CapabilityPolicy),
     HttpApiEndpoint.post("consume", "/api/handoffs/:id/consume", {
-      params: { id: HandoffId }, success: [Consumed, Gone], error: errors,
+      params: { id: HandoffId }, success: Consumed, error: [...errors, Gone],
     }).middleware(CapabilityPolicy),
     HttpApiEndpoint.get("rejectRead", "/api/handoffs/:id", { params: { id: HandoffId } }),
   ).middleware(SchemaRefusal),
-);
+).annotate(HttpApi.SuccessParseOptions, { onExcessProperty: "error" });

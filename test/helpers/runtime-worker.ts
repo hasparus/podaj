@@ -6,6 +6,7 @@ import { digest } from "../../src/handoffs/capabilities.js";
 
 const realNow = Date.now;
 let offset = 0;
+const requests: { method: string; path: string; authorization: string | null; body: string }[] = [];
 Date.now = () => realNow() + offset;
 
 export class InspectableHandoffParty extends HandoffParty {
@@ -72,11 +73,17 @@ export default {
           return Response.json({ events, clientState: socket.readyState, snapshot: await stub.snapshot() });
         }
         case "/__test/snapshot": return Response.json(await stub.snapshot());
-        case "/__test/reset": await stub.reset(); return Response.json({ reset: true });
+        case "/__test/requests": return Response.json(requests);
+        case "/__test/reset": requests.length = 0; await stub.reset(); return Response.json({ reset: true });
         case "/__test/advance": return Response.json(await stub.advance(Number(url.searchParams.get("ms"))));
         default: return new Response(null, { status: 404 });
       }
     }
-    return worker.fetch(request, env);
+    const observed = { method: request.method, path: url.pathname, authorization: request.headers.get("Authorization"), body: "" };
+    requests.push(observed);
+    const body = request.method === "POST" || request.method === "PUT" ? request.clone() : null;
+    const response = await worker.fetch(request, env);
+    if (body !== null) observed.body = await body.text();
+    return response;
   },
 };

@@ -2,10 +2,13 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
 export const sqliteStorage = () => {
   const database = new DatabaseSync(":memory:");
+  const statements: Array<{ query: string; bindings: SQLInputValue[]; columns: string[] }> = [];
   const storage = {
     sql: {
       exec(query: string, ...bindings: SQLInputValue[]) {
-        const rows = database.prepare(query).all(...bindings);
+        const statement = database.prepare(query);
+        statements.push({ query, bindings, columns: statement.columns().map((column) => column.name) });
+        const rows = statement.all(...bindings);
         return { toArray: () => rows };
       },
     },
@@ -21,5 +24,5 @@ export const sqliteStorage = () => {
       }
     },
   } as unknown as Pick<DurableObjectStorage, "sql" | "transactionSync">;
-  return { storage, database };
+  return { storage, database, statements };
 };

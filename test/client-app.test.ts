@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { init, Message, update, type Model } from "../src/client/app.js";
-import { open } from "../src/crypto/podaj1.js";
+import { openPodaj1 } from "../scripts/open-podaj1.js";
 
 const ID = "a".repeat(32);
 const WRITE = "b".repeat(64);
@@ -98,7 +98,7 @@ describe("CLI-created human fill form", () => {
     const body = JSON.parse(wire);
     expect(Object.keys(body)).toEqual(["sealed"]);
     expect(body.sealed).toMatch(/^PODAJ1\./u);
-    expect((await open(body.sealed, privateKeyPem)).payload).toEqual({ vars: [{ key: NAME, value: VALUE }] });
+    expect(JSON.parse(openPodaj1(body.sealed, privateKeyPem))).toEqual({ vars: [{ key: NAME, value: VALUE }] });
     expect(generate.mock.calls.every(([algorithm]) => typeof algorithm === "object" && algorithm.name === "AES-GCM")).toBe(true);
     const done = update(submitted.model, sent).model;
     expect(done.sent).toBe(true);

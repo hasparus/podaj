@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { buildSync } from "esbuild";
 
 import { initArgs } from "../scripts/init-args.js";
 import { runInit, type InitIo, type SavedInit } from "../scripts/init-flow.js";
@@ -124,6 +125,7 @@ it("refuses an obsolete build before replacing the staged worker", () => {
   try {
     mkdirSync(join(root, "dist", "client"), { recursive: true });
     mkdirSync(join(root, "stage"));
+    writeFileSync(join(root, "wrangler.jsonc"), readFileSync(new URL("../wrangler.jsonc", import.meta.url)));
     writeFileSync(join(root, "dist", "client", "index.html"), "old build");
     writeFileSync(join(root, "stage", "entry.ts"), "old stage");
     expect(clientBuilt(root)).toBe(false);
@@ -134,7 +136,7 @@ it("refuses an obsolete build before replacing the staged worker", () => {
   }
 });
 
-it("stages only assets and the SQLite DO entry/binding/migration, discarding old global keys", () => {
+it("stages the canonical JSONC configuration and real worker entry, discarding old global keys", () => {
   const root = mkdtempSync(join(tmpdir(), "podaj-stage-"));
   try {
     mkdirSync(join(root, "dist", "client"), { recursive: true });
@@ -143,22 +145,58 @@ it("stages only assets and the SQLite DO entry/binding/migration, discarding old
     writeFileSync(join(root, "dist", "client", "recipient.pem"), "OBSOLETE PUBLIC KEY");
     writeFileSync(join(root, "dist", "client", "recipient.pem.example"), "OBSOLETE EXAMPLE");
     writeFileSync(join(root, "dist", "client", "_headers"), "/*\n  Content-Security-Policy: script-src 'self'\n");
+    const original = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
+    writeFileSync(join(root, "wrangler.jsonc"), original);
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src", "worker.ts"), "export default { fetch() { return new Response('fixture'); } }; export class HandoffParty {}\n");
     const stage = join(root, "stage");
     const configPath = stageWorker({ packageRoot: root, stage });
     const config = JSON.parse(readFileSync(configPath, "utf8"));
-    expect(config).not.toHaveProperty("kv_namespaces");
-    expect(config.assets.run_worker_first).toEqual(["/", "/s/*", "/api/*", "/parties/*", "/authorize", "/authorize/", "/authorize.html"]);
-    expect(config.assets).not.toHaveProperty("not_found_handling");
-    expect(config.ratelimits).toEqual([{ name: "PUBLIC_API_LIMITER", namespace_id: "1001", simple: { limit: 60, period: 60 } }]);
-    expect(config.observability).toEqual({ enabled: false });
     expect(readFileSync(join(stage, "assets", "_headers"), "utf8")).toContain("script-src 'self'");
-    expect(config.durable_objects.bindings).toEqual([{ class_name: "HandoffParty", name: "HANDOFF_PARTY" }]);
-    expect(config.migrations).toEqual([{ new_sqlite_classes: ["HandoffParty"], tag: "v1-handoff-party" }]);
     expect(existsSync(join(stage, "assets", "recipient.pem"))).toBe(false);
     expect(existsSync(join(stage, "assets", "recipient.pem.example"))).toBe(false);
-    expect(config.vars.PODAJ_MODE).toBe("private");
     expect(existsSync(join(stage, "assets", "authorize.html"))).toBe(true);
-    expect(readFileSync(join(stage, "entry.ts"), "utf8")).toContain("export { default, HandoffParty }");
+    expect(readFileSync(join(stage, "entry.ts"), "utf8")).toContain(JSON.stringify(join(root, "src", "worker.ts")));
+    const canonical = JSON.parse(original);
+    expect(config).toEqual({ ...canonical, main: "entry.ts", assets: { ...canonical.assets, directory: "assets" } });
+    expect(readFileSync(join(root, "wrangler.jsonc"), "utf8")).toBe(original);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("preserves customized JSONC fields and resolves main/assets relative to the package", () => {
+  const root = mkdtempSync(join(tmpdir(), "podaj-custom-stage-"));
+  try {
+    const canonical = {
+      ...JSON.parse(readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8")),
+      name: "private-custom-worker",
+      main: "worker/entry.ts",
+      vars: { PODAJ_MODE: "private", HANDOFF_TTL_SECONDS: "3600", MAX_HANDOFF_BYTES: "65536" },
+      assets: { directory: "ui", binding: "CUSTOM_ASSETS", run_worker_first: ["/custom/*"] },
+      observability: { enabled: true },
+    };
+    const document = JSON.stringify(canonical, null, 2);
+    const original = `// private instance configuration\n${document.slice(0, -1)},\n}\n`;
+    writeFileSync(join(root, "wrangler.jsonc"), original);
+    mkdirSync(join(root, "ui"));
+    for (const file of ["index.html", "authorize.html", "_headers"]) writeFileSync(join(root, "ui", file), "fixture asset");
+    mkdirSync(join(root, "worker"));
+    writeFileSync(join(root, "worker", "entry.ts"), "export { default } from './implementation.js';\n");
+    writeFileSync(join(root, "worker", "implementation.ts"), "export default { fetch() { return new Response('real worker'); } };\n");
+    expect(clientBuilt(root)).toBe(true);
+    const staged = JSON.parse(readFileSync(stageWorker({ packageRoot: root, stage: join(root, "stage") }), "utf8"));
+    expect(staged).toEqual({ ...canonical, main: "entry.ts", assets: { ...canonical.assets, directory: "assets" } });
+    expect(readFileSync(join(root, "stage", "entry.ts"), "utf8")).toContain(JSON.stringify(join(root, "worker", "entry.ts")));
+    const bundled = buildSync({ entryPoints: [join(root, "stage", staged.main)], bundle: true, format: "esm", write: false });
+    expect(bundled.outputFiles[0].text).toContain("real worker");
+    expect(readFileSync(join(root, "wrangler.jsonc"), "utf8")).toBe(original);
+    expect(readFileSync(join(root, "stage", "assets", "index.html"), "utf8")).toBe("fixture asset");
+    rmSync(join(root, "worker", "entry.ts"));
+    expect(() => stageWorker({ packageRoot: root, stage: join(root, "stage") })).toThrow("missing worker entry");
+    expect(existsSync(join(root, "stage", "entry.ts"))).toBe(true);
+    writeFileSync(join(root, "wrangler.jsonc"), '{ "main": "unterminated');
+    expect(() => stageWorker({ packageRoot: root, stage: join(root, "stage") })).toThrow("wrangler.jsonc must configure");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

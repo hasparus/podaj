@@ -12,6 +12,7 @@
   },
   "files": [
     "dist/scripts",
+    "dist/src",
     "src",
     "dist/client",
     "wrangler.jsonc",
@@ -35,8 +36,8 @@
     "keygen": "bun scripts/podaj.ts keygen",
     "decrypt": "bun scripts/podaj.ts decrypt",
     "lint": "oxlint -c oxlint.config.ts",
-    "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && lefthook install || true",
-    "test": "bun run build:cli && vitest run",
+    "prepare": "[ ! -f scripts/prepare.ts ] || bun scripts/prepare.ts",
+    "test": "bun run build && vitest run",
     "typecheck": "tsrs --noEmit -p tsconfig.json && tsrs --noEmit -p tsconfig.scripts.json",
     "typecheck:scripts": "tsrs --noEmit -p tsconfig.scripts.json"
   },
@@ -63,6 +64,7 @@
     "@fontsource/commit-mono": "^5.3.0",
     "effect": "4.1.2",
     "foldkit": "0.170.0",
+    "jsonc-parser": "3.3.1",
     "pixelarticons": "2.4.2",
     "wrangler": "4.45.0",
     "ws": "^8.22.1"
