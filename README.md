@@ -1,5 +1,8 @@
 # podaj
 
+> [!NOTE]  
+> I realize this is a bit silly, but not every remote agent UI has a secure secret passing tool, and one of them kept asking me for passwords and immediately screenshotting them.
+
 One-shot environment-variable handoff: your CLI creates a link, a human fills it and clicks **send**, and the CLI receives JSON.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/hasparus/podaj)
