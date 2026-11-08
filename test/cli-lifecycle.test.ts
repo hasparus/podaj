@@ -120,9 +120,9 @@ const complete = async (runtime: NativeRuntime, cli: CliRun, expected: Record<st
 describe("compiled CLI → production human gates → Worker/SQLite/native WS → CLI", () => {
   it("connects without recipient files, token output, recipient fetch or request creation", async () => {
     const instance = await setup();
-    const { stdout, stderr } = await instance.run(["init", "--url", instance.runtime.origin, "--token", OWNER]).result;
+    const { stdout, stderr } = await instance.run(["config", "--url", instance.runtime.origin, "--token", OWNER]).result;
     expect(`${stdout}${stderr}`).not.toContain(OWNER);
-    expect(JSON.parse(stdout)).toEqual({ mode: "connect", url: instance.runtime.origin, config: instance.configFile });
+    expect(JSON.parse(stdout)).toEqual({ url: instance.runtime.origin, config: instance.configFile });
     expect(JSON.parse(await readFile(instance.configFile, "utf8"))).toEqual({ token: OWNER, url: instance.runtime.origin });
     expect((await instance.runtime.requests()).map((request) => request.path)).toEqual(["/api/config", "/api/access"]);
     expect(existsSync(instance.keysDir)).toBe(false);
@@ -137,24 +137,24 @@ describe("compiled CLI → production human gates → Worker/SQLite/native WS �
     expect((await instance.runtime.snapshot()).handoffs).toHaveLength(0);
   });
 
-  it("connects to a demo without generating keys or requesting browser approval", async () => {
+  it("config connects to a public instance without generating keys or requesting browser approval", async () => {
     const instance = await setup(demoRuntime);
-    const { stdout, stderr } = await instance.run(["init", "--url", instance.runtime.origin]).result;
-    expect(JSON.parse(stdout)).toEqual({ mode: "connect", url: instance.runtime.origin, config: instance.configFile });
+    const { stdout, stderr } = await instance.run(["config", "--url", instance.runtime.origin]).result;
+    expect(JSON.parse(stdout)).toEqual({ url: instance.runtime.origin, config: instance.configFile });
     expect(stderr).toBe("");
     expect(existsSync(instance.keysDir)).toBe(false);
     expect((await instance.runtime.requests()).map((request) => request.path)).toEqual(["/api/config", "/api/access"]);
     expect(JSON.parse(await readFile(instance.configFile, "utf8"))).toEqual({ token: "", url: instance.runtime.origin });
   });
 
-  it("refuses private init without owner auth", async () => {
+  it("refuses private config without owner auth", async () => {
     const instance = await setup();
-    await expect(instance.run(["init", "--url", instance.runtime.origin], "").result).rejects.toMatchObject({ code: 1, stdout: "" });
+    await expect(instance.run(["config", "--url", instance.runtime.origin], "").result).rejects.toMatchObject({ code: 1, stdout: "" });
     expect(existsSync(instance.configFile)).toBe(false);
     expect(existsSync(instance.keysDir)).toBe(false);
   });
 
-  it.each(["valid", "mismatch", "invalid", "private-only"] as const)("preserves existing %s key files during init and explicitly sent handoff", async (existingKeys) => {
+  it.each(["valid", "mismatch", "invalid", "private-only"] as const)("preserves existing %s key files during config and explicitly sent handoff", async (existingKeys) => {
     const instance = await setup(privateRuntime, existingKeys);
     const snapshot = async () => Promise.all((await readdir(instance.keysDir)).sort().map(async (name) => {
       const path = join(instance.keysDir, name);
@@ -162,7 +162,7 @@ describe("compiled CLI → production human gates → Worker/SQLite/native WS �
       return { name, content: await readFile(path, "utf8"), mode: metadata.mode, inode: metadata.ino, modified: metadata.mtimeMs };
     }));
     const before = await snapshot();
-    await instance.run(["init", "--url", instance.runtime.origin, "--token", OWNER]).result;
+    await instance.run(["config", "--url", instance.runtime.origin, "--token", OWNER]).result;
     const { requests } = await complete(privateRuntime, instance.run(["wait", "API_KEY"]));
     expect(await snapshot()).toEqual(before);
     const publicPem = JSON.parse(requests.find((request) => request.path === "/api/handoffs/reserve")!.body).recipientPublicKey;
@@ -216,7 +216,7 @@ describe("compiled CLI → production human gates → Worker/SQLite/native WS �
     expect(requests.find((request) => request.path === "/api/handoffs/reserve")?.authorization).toBe(`Bearer ${OWNER}`);
   });
 
-  it("keeps demo pending until production approval, then pending until production ClickedSend", async () => {
+  it("keeps public access pending until production approval, then pending until production ClickedSend", async () => {
     const instance = await setup(demoRuntime);
     const cli = instance.run(["wait", "API_KEY"]);
     const link = await cli.link("/authorize#");

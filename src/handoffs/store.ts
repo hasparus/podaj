@@ -1,4 +1,5 @@
 import { handoffTtlSeconds, maxHandoffBytes } from "../security.js";
+import { handoffAccess } from "./access.js";
 import {
   CAPABILITY,
   DEMO_LIMITS,
@@ -22,7 +23,7 @@ const CREDENTIAL_TTL = 7_200_000;
 
 type Storage = Pick<DurableObjectStorage, "sql" | "transactionSync">;
 export type HandoffStoreConfig = {
-  PODAJ_MODE?: string;
+  PODAJ_ACCESS?: string;
   HANDOFF_TTL_SECONDS?: string;
   MAX_HANDOFF_BYTES?: string;
 };
@@ -54,9 +55,9 @@ export class HandoffStore {
   constructor(storage: Storage, config: HandoffStoreConfig = {}, now: () => number = Date.now) {
     this.storage = storage;
     this.now = now;
-    const demo = config.PODAJ_MODE === "demo";
-    this.ttlMs = Math.min(handoffTtlSeconds(config.HANDOFF_TTL_SECONDS), demo ? 7200 : 86400) * 1000;
-    this.maxBytes = Math.min(maxHandoffBytes(config.MAX_HANDOFF_BYTES), demo ? 32768 : Number.MAX_SAFE_INTEGER);
+    const isPublic = handoffAccess(config) === "public";
+    this.ttlMs = Math.min(handoffTtlSeconds(config.HANDOFF_TTL_SECONDS), isPublic ? 7200 : 86400) * 1000;
+    this.maxBytes = Math.min(maxHandoffBytes(config.MAX_HANDOFF_BYTES), isPublic ? 32768 : Number.MAX_SAFE_INTEGER);
     storage.transactionSync(() => {
       storage.sql.exec(`CREATE TABLE IF NOT EXISTS handoffs (
         id TEXT PRIMARY KEY,

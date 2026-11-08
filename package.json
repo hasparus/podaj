@@ -25,7 +25,7 @@
   "packageManager": "bun@1.4.4",
   "scripts": {
     "build": "bun run build:cli && vite build",
-    "build:cli": "tsc -p tsconfig.scripts.build.json && chmod +x dist/scripts/podaj.js dist/scripts/hooks/block-git-no-verify.js",
+    "build:cli": "rm -rf dist/scripts dist/src && tsc -p tsconfig.scripts.build.json && chmod +x dist/scripts/podaj.js dist/scripts/hooks/block-git-no-verify.js",
     "cf:test": "bun scripts/cloudflare.ts test",
     "cf:demo": "bun scripts/cloudflare.ts demo",
     "prepack": "bun run build",

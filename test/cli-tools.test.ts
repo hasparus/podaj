@@ -11,7 +11,7 @@ import { packageTool } from "../scripts/package-paths.js";
 import { runTerminal } from "./helpers/terminal.js";
 
 const exec = promisify(execFile);
-const fixture = () => {
+const fixture = (loginRequired = false) => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "podaj-tools-")));
   const root = join(home, "node_modules", "podaj");
   const wrangler = join(home, "node_modules", "wrangler");
@@ -29,10 +29,10 @@ const fixture = () => {
   writeFileSync(join(wrangler, "package.json"), JSON.stringify({ name: "wrangler", version: "0.0.0", bin: { wrangler: "bin/wrangler.js" } }));
   const calls = join(home, "calls.jsonl");
   buildSync({ entryPoints: [resolve("test/helpers/fake-wrangler.ts")], outfile: join(wrangler, "bin/wrangler.js"), platform: "node", format: "cjs", target: "node22" });
-  const env = { HOME: home, XDG_CONFIG_HOME: join(home, "config"), PATH: "/nonexistent", TERM: "xterm-256color", NO_COLOR: "1", PODAJ_TEST_WRANGLER_LOG: calls };
+  const env = { HOME: home, XDG_CONFIG_HOME: join(home, "config"), PATH: "/nonexistent", TERM: "xterm-256color", NO_COLOR: "1", PODAJ_TEST_WRANGLER_LOG: calls, PODAJ_TEST_LOGIN_REQUIRED: loginRequired ? "1" : "0" };
   const configFile = join(home, "config", "podaj", "config.json");
-  const run = (steps: [string, string][], timeoutMs?: number) => runTerminal({
-    command: [process.execPath, join(root, "dist/scripts/podaj.js"), "init"], cwd: home, env, steps, timeoutMs,
+  const run = (steps: [string, string][], timeoutMs?: number, command = "config") => runTerminal({
+    command: [process.execPath, join(root, "dist/scripts/podaj.js"), command], cwd: home, env, steps, timeoutMs,
   });
   return { home, root, calls, configFile, run };
 };
@@ -90,14 +90,14 @@ describe("Node dependency tools and actual terminal prompts", { timeout: 20_000 
     } finally { rmSync(instance.home, { recursive: true, force: true }); }
   });
 
-  it("waits for connect answers in a real PTY and saves the accepted private token", async () => {
+  it("config waits for private connection answers in a real PTY without deploying", async () => {
     const instance = fixture();
     const requests: string[] = [];
     const server = createServer((request, response) => {
       requests.push(request.url!);
       response.setHeader("Content-Type", "application/json");
       if (request.url === "/api/config") {
-        response.end(JSON.stringify({ mode: "private", handoffTtlSeconds: 7200, maxHandoffBytes: 32768 }));
+        response.end(JSON.stringify({ access: "private", handoffTtlSeconds: 7200, maxHandoffBytes: 32768 }));
       } else {
         response.writeHead(request.headers.authorization === "Bearer terminal-fixture-token" ? 200 : 401);
         response.end("{}");
@@ -109,7 +109,6 @@ describe("Node dependency tools and actual terminal prompts", { timeout: 20_000 
     const origin = `http://127.0.0.1:${address.port}`;
     try {
       const result = await instance.run([
-        ["Where is your podaj?", "\r"],
         ["Worker URL", `${origin}\r`],
         ["I have the token", "\r"],
         ["Paste instance token", "terminal-fixture-token\r"],
@@ -129,7 +128,7 @@ describe("Node dependency tools and actual terminal prompts", { timeout: 20_000 
   it("handles cancellation after displaying a real prompt without saving or invoking Wrangler", async () => {
     const instance = fixture();
     try {
-      const result = await instance.run([["Where is your podaj?", "\u0003"]]);
+      const result = await instance.run([["Worker URL", "\u0003"]]);
       expect(result.code).toBe(0);
       expect(result.output).toContain("stopped");
       expect(existsSync(instance.configFile)).toBe(false);
@@ -141,7 +140,7 @@ describe("Node dependency tools and actual terminal prompts", { timeout: 20_000 
     const instance = fixture();
     try {
       await expect(instance.run([
-        ["Where is your podaj?", ""],
+        ["Worker URL", ""],
         ["a prompt that cannot appear", ""],
       ], 1_000)).rejects.toThrow("terminal deadline exceeded");
       expect(existsSync(instance.configFile)).toBe(false);
@@ -149,11 +148,26 @@ describe("Node dependency tools and actual terminal prompts", { timeout: 20_000 
     } finally { rmSync(instance.home, { recursive: true, force: true }); }
   });
 
-  it("selects deploy in a real PTY using only hoisted fake Wrangler and Node without Bun on PATH", async () => {
+  it("logs in before deploying when Wrangler whoami exits zero but reports no authentication", async () => {
+    const instance = fixture(true);
+    try {
+      const result = await instance.run([["https://installed-fixture.example.workers.dev", ""]], undefined, "deploy");
+      expect(result.code).toBe(0);
+      expect(result.output).toContain("Cloudflare needs a browser login");
+      const calls = readFileSync(instance.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      expect(calls.map((call) => call.args[0])).toEqual(["whoami", "login", "whoami", "deploy", "secret"]);
+      expect(JSON.parse(readFileSync(instance.configFile, "utf8")).url).toBe("https://installed-fixture.example.workers.dev");
+    } finally { rmSync(instance.home, { recursive: true, force: true }); }
+  });
+
+  it("runs deploy directly in a real PTY using only hoisted fake Wrangler and Node without Bun on PATH", async () => {
     const instance = fixture();
     try {
-      const result = await instance.run([["Where is your podaj?", "\u001b[B\r"]]);
+      const result = await instance.run([["https://installed-fixture.example.workers.dev", ""]], undefined, "deploy");
       expect(result.code).toBe(0);
+      for (const prompt of ["Where is your podaj?", "Worker URL", "Instance token", "Worker name"]) {
+        expect(result.output).not.toContain(prompt);
+      }
       const calls = readFileSync(instance.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line));
       const staged = join(instance.home, ".local/share/podaj/worker/wrangler.json");
       expect(calls).toEqual([
@@ -162,8 +176,9 @@ describe("Node dependency tools and actual terminal prompts", { timeout: 20_000 
         { args: ["secret", "put", "PODAJ_API_AUTH_SECRET", "--config", staged], stdinBytes: 65 },
       ]);
       const saved = JSON.parse(readFileSync(instance.configFile, "utf8"));
-      expect(saved.url).toBe("https://installed-fixture.example.workers.dev");
-      expect(saved.token).toMatch(/^[a-f0-9]{64}$/u);
+      expect(saved).toEqual({ url: "https://installed-fixture.example.workers.dev", token: expect.stringMatching(/^[a-f0-9]{64}$/u) });
+      expect(result.output).toContain(instance.configFile);
+      expect(result.output).not.toContain('"mode"');
       expect(result.output).not.toContain(saved.token);
     } finally { rmSync(instance.home, { recursive: true, force: true }); }
   });

@@ -32,9 +32,9 @@ const run = async (result: ReturnType<typeof update>) => {
   if (!command) throw new Error("missing command");
   return Effect.runPromise(command.effect);
 };
-const ready = async () => {
+const ready = async (access: "private" | "public" = "private") => {
   const initial = init({ page: "compose", handoffId: ID, writeToken: WRITE, publicKeyPem });
-  fetchMock.mockResolvedValueOnce(Response.json({ mode: "private", maxHandoffBytes: 32768, handoffTtlSeconds: 7200 }));
+  fetchMock.mockResolvedValueOnce(Response.json({ access, maxHandoffBytes: 32768, handoffTtlSeconds: 7200 }));
   let model = initial.model;
   for (const command of initial.commands ?? []) model = update(model, await Effect.runPromise(command.effect)).model;
   expect(fetchMock).toHaveBeenCalledExactlyOnceWith("/api/config", expect.anything());
@@ -66,6 +66,14 @@ describe("CLI-created human fill form", () => {
     noCommands(initial);
     noCommands(update(initial.model, Message.ClickedSend()));
     expect(initial.model.status).toMatchObject({ _tag: "Error" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["private", "public"] as const)("loads a capability fill form with %s access without an admission handshake", async (access) => {
+    const model = await ready(access);
+    expect(model.recipientReady).toBe(true);
+    expect(model.limitsReady).toBe(true);
+    expect(model.sending).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

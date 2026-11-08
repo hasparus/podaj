@@ -17,12 +17,12 @@ export const ApprovalBody = Schema.Struct({
 });
 export const FillBody = Schema.Struct({ sealed: Schema.String });
 export const Config = Schema.Struct({
-  mode: Schema.Literals(["private", "demo"]),
+  access: Schema.Literals(["private", "public"]),
   handoffTtlSeconds: Schema.Number,
   maxHandoffBytes: Schema.Number,
   turnstileSiteKey: Schema.optional(Schema.String),
 });
-export const Access = Schema.Struct({ mode: Schema.Literals(["private", "demo"]), authorized: Schema.Literal(true) });
+export const Access = Schema.Struct({ access: Schema.Literals(["private", "public"]), authorized: Schema.Literal(true) });
 export const Reserved = Schema.Struct({
   id: HandoffId,
   expiresAt: Schema.Number,

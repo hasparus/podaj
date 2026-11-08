@@ -25,12 +25,22 @@ it("probes access, not a random handoff, with bounded nonredirecting requests", 
   expect(tokenVerdict(503)).toBe("locked");
 });
 
-it("reads explicit configuration and refuses invalid modes", async () => {
-  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ mode: "unknown" })));
+it.each(["private", "public"] as const)("reads explicit %s access configuration without sending credentials", async (access) => {
+  const config = { access, handoffTtlSeconds: 7200, maxHandoffBytes: 32768, ...(access === "public" ? { turnstileSiteKey: "synthetic-site-key" } : {}) };
+  const fetcher = vi.fn().mockResolvedValue(Response.json(config));
+  vi.stubGlobal("fetch", fetcher);
+  expect(await instanceConfig("http://localhost:8787")).toEqual(config);
+  expect(String(fetcher.mock.calls[0]?.[0])).toBe("http://localhost:8787/api/config");
+  expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ redirect: "error", signal: expect.any(AbortSignal) });
+  expect(fetcher.mock.calls[0]?.[1].headers).toBeUndefined();
+});
+
+it.each([{ access: "demo" }, { access: "unknown" }, { mode: "private" }, { mode: "demo" }])("refuses obsolete or invalid access configuration %j", async (fields) => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ ...fields, handoffTtlSeconds: 7200, maxHandoffBytes: 32768 })));
   await expect(instanceConfig("http://localhost:8787")).rejects.toThrow("invalid instance configuration");
 });
 
-describe("proof-bound demo authorization", () => {
+describe("proof-bound public authorization", () => {
   it("shows only the challenge and own SPKI, polls using verifier, and verifies full fingerprint", async () => {
     let link = "";
     let verifier = "";

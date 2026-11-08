@@ -14,7 +14,7 @@ import {
   enforceApiPolicy, RequestBindings,
 } from "./policy.js";
 
-export { handoffMode, handoffService } from "./policy.js";
+export { handoffAccess, handoffService } from "./policy.js";
 
 const requestOperation = <A>(operation: (request: Request, env: Env) => A | Promise<A>) =>
   Effect.gen(function* () {

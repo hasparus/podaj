@@ -61,7 +61,7 @@ export const waitReady = async (id: string, base: string, subscribeToken: string
         signal: deadline,
       });
       if (response.status === 401) throw new Error("subscription capability rejected");
-      if (response.status === 503) throw new Error("this podaj is locked — run podaj init");
+      if (response.status === 503) throw new Error("this podaj is locked — run podaj config");
       const body: unknown = await response.json();
       const status = typeof body === "object" && body !== null && "status" in body
         ? body.status

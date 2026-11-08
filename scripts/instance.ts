@@ -54,15 +54,15 @@ export const instanceConfig = async (origin: string): Promise<ClientConfig> => {
   });
   if (!response.ok) throw new Error(`configuration unavailable (${response.status})`);
   const body = jsonRecord(await response.json());
-  const { mode, handoffTtlSeconds, maxHandoffBytes, turnstileSiteKey } = body;
-  if ((mode !== "private" && mode !== "demo") ||
+  const { access, handoffTtlSeconds, maxHandoffBytes, turnstileSiteKey } = body;
+  if ((access !== "private" && access !== "public") ||
       typeof handoffTtlSeconds !== "number" || !Number.isInteger(handoffTtlSeconds) || handoffTtlSeconds <= 0 ||
       typeof maxHandoffBytes !== "number" || !Number.isInteger(maxHandoffBytes) || maxHandoffBytes <= 0 ||
       (turnstileSiteKey !== undefined && typeof turnstileSiteKey !== "string")) {
     throw new Error("invalid instance configuration");
   }
   return {
-    mode, handoffTtlSeconds, maxHandoffBytes,
+    access, handoffTtlSeconds, maxHandoffBytes,
     ...(typeof turnstileSiteKey === "string" ? { turnstileSiteKey } : {}),
   };
 };

@@ -43,13 +43,13 @@ This is a procedure to perform, not a claim that a browser run has happened.
   "assets": { "directory": "/ABS/REPO/dist/client", "binding": "ASSETS", "run_worker_first": ["/", "/s/*", "/api/*", "/parties/*", "/authorize", "/authorize/", "/authorize.html"] },
   "durable_objects": { "bindings": [{ "name": "HANDOFF_PARTY", "class_name": "HandoffParty" }] },
   "migrations": [{ "tag": "v1-handoff-party", "new_sqlite_classes": ["HandoffParty"] }],
-  "vars": { "PODAJ_MODE": "private", "MAX_HANDOFF_BYTES": "32768", "HANDOFF_TTL_SECONDS": "7200" }
+  "vars": { "PODAJ_ACCESS": "private", "MAX_HANDOFF_BYTES": "32768", "HANDOFF_TTL_SECONDS": "7200" }
 }
 ```
 
 5. In that sanitized environment, invoke the installed repository Wrangler binary with `dev --local --config "$SCRATCH/wrangler.json" --ip 127.0.0.1 --port "$PORT" --inspector-port "$INSPECTOR_PORT" --persist-to "$SCRATCH/state"`. Persist only local SQLite-backed Durable Object state there. Track the actual child PID/process group and logs. Never pass `--remote`.
 6. Set `URL=http://127.0.0.1:$PORT`. Wait for this process to serve `/api/config` with private mode and `/` with the built SPA; verify port ownership and CSP/no-store. Readiness must not reserve or consume anything. No public recipient key file is needed.
-7. From scratch, run the real compiled CLI under Node: `node "$REPO/dist/scripts/podaj.js" init --url "$URL" </dev/null`. Its config must appear only under scratch. Then run `node "$REPO/dist/scripts/podaj.js" wait PODAJ_VERIFY_A PODAJ_VERIFY_B </dev/null >"$SCRATCH/result.json" 2>"$SCRATCH/cli.stderr"` as a tracked process, with the same isolated environment. Local private mode needs no owner secret.
+7. From scratch, run the real compiled CLI under Node: `node "$REPO/dist/scripts/podaj.js" config --url "$URL" </dev/null`. Its config must appear only under scratch. Then run `node "$REPO/dist/scripts/podaj.js" wait PODAJ_VERIFY_A PODAJ_VERIFY_B </dev/null >"$SCRATCH/result.json" 2>"$SCRATCH/cli.stderr"` as a tracked process, with the same isolated environment. Local private mode needs no owner secret.
 8. Read the browser skill's current `agent-browser` instructions. Open the exact CLI-emitted fill URL in your unique `--session`; follow [human-fill.md](features/human-fill.md), then [terminal-consume.md](features/terminal-consume.md). Never replace this journey with direct encryption/API calls.
 
 ## Evidence and cleanup

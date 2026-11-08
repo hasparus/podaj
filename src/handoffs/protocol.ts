@@ -1,7 +1,7 @@
-export type HandoffMode = "private" | "demo";
+export type HandoffAccess = "private" | "public";
 
 export interface ClientConfig {
-  mode: HandoffMode;
+  access: HandoffAccess;
   handoffTtlSeconds: number;
   maxHandoffBytes: number;
   turnstileSiteKey?: string;

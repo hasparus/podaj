@@ -30,6 +30,7 @@ let staged: WorkerConfig;
 let sourceConfig: string;
 let originalConfig: string;
 let packedPaths: string[];
+let deployment: { stdout: string; stderr: string };
 const env = (): NodeJS.ProcessEnv => ({
   PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(home, "config"),
   PODAJ_KEY_DIR: join(home, "keys"),
@@ -67,8 +68,7 @@ beforeAll(async () => {
   canonical.vars = { ...canonical.vars, HANDOFF_TTL_SECONDS: "3600", MAX_HANDOFF_BYTES: "40000" };
   sourceConfig = `// Installed instance customizations must survive staging.\n${JSON.stringify(canonical, null, 2)}\n`;
   await writeFile(join(root, "wrangler.jsonc"), sourceConfig);
-  const deployed = await exec(process.execPath, [bin(), "init", "--deploy"], { cwd: home, env: env(), timeout: 15_000 });
-  expect(JSON.parse(deployed.stdout)).toMatchObject({ mode: "deploy", url: "https://installed-fixture.example.workers.dev" });
+  deployment = await exec(process.execPath, [bin(), "deploy"], { cwd: home, env: { ...env(), PATH: "/nonexistent" }, timeout: 15_000 });
   stage = join(home, ".local/share/podaj/worker");
   staged = JSON.parse(await readFile(join(stage, "wrangler.json"), "utf8")) as WorkerConfig;
   const bundled = await build({ entryPoints: [join(stage, staged.main)], bundle: true, write: false, platform: "browser", format: "esm", target: "es2022", external: ["cloudflare:workers"] });
@@ -92,10 +92,22 @@ describe("extracted real npm package in a hoisted installation", () => {
       expect(packedPaths).toContain(path);
     }
     expect(packedPaths.some((path) => path.startsWith("scripts/") || path.endsWith(".mjs"))).toBe(false);
+    expect(packedPaths.some((path) => path.startsWith("dist/scripts/init-"))).toBe(false);
     expect(packedPaths.some((path) => /recipient\.pem/u.test(path))).toBe(false);
     expect((await stat(bin())).mode & 0o111).not.toBe(0);
     expect(existsSync(join(root, "node_modules"))).toBe(false);
     expect(existsSync(join(root, "scripts"))).toBe(false);
+  });
+
+  it("deploy automatically saves a private connection through the packed Node binary without Bun", async () => {
+    const config = join(home, "config", "podaj", "config.json");
+    const saved = JSON.parse(await readFile(config, "utf8"));
+    expect(saved).toEqual({ url: "https://installed-fixture.example.workers.dev", token: expect.stringMatching(/^[a-f0-9]{64}$/u) });
+    expect(JSON.parse(deployment.stdout)).toEqual({ config, url: saved.url });
+    expect(`${deployment.stdout}${deployment.stderr}`).not.toContain(saved.token);
+    expect((await stat(config)).mode & 0o777).toBe(0o600);
+    expect((await stat(dirname(config))).mode & 0o777).toBe(0o700);
+    expect(existsSync(join(home, "keys"))).toBe(false);
   });
 
   it("actually resolves the hoisted Node Wrangler entry and stages canonical configuration without rewriting it", async () => {
@@ -110,7 +122,7 @@ describe("extracted real npm package in a hoisted installation", () => {
       ["whoami"], ["deploy", "--config", join(stage, "wrangler.json")],
       ["secret", "put", "PODAJ_API_AUTH_SECRET", "--config", join(stage, "wrangler.json")],
     ]);
-    expect(calls.at(-1)!.stdinBytes).toBeGreaterThan(1);
+    expect(calls.map((call) => call.stdinBytes)).toEqual([0, 0, 65]);
     expect((await runtime.dispatchFetch("http://localhost/api/config")).status).toBe(200);
     expect(await (await runtime.dispatchFetch("http://localhost/api/config")).json()).toMatchObject({ handoffTtlSeconds: 3600, maxHandoffBytes: 40000 });
   });

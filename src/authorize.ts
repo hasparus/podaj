@@ -45,7 +45,7 @@ export const mountAuthorizationPage = async (): Promise<void> => {
     const response = await fetch("/api/config", { cache: "no-store", redirect: "error", signal: AbortSignal.timeout(10_000) });
     if (!response.ok) {throw new Error("Verification isn't configured on this instance.");}
     const config: unknown = await response.json();
-    if (typeof config !== "object" || config === null || !("mode" in config) || config.mode !== "demo"
+    if (typeof config !== "object" || config === null || !("access" in config) || config.access !== "public"
       || !("turnstileSiteKey" in config) || typeof config.turnstileSiteKey !== "string" || !config.turnstileSiteKey) {
       throw new Error("Verification isn't configured on this instance.");
     }

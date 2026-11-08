@@ -22,7 +22,7 @@ export const nativeRuntime = async (demo: boolean) => {
     modules: true, script: compiled.outputFiles[0].text, compatibilityDate: "2025-10-11",
     durableObjects: { HANDOFF_PARTY: { className: "InspectableHandoffParty", useSQLite: true } },
     bindings: {
-      PODAJ_MODE: demo ? "demo" : "private", PODAJ_API_AUTH_SECRET: OWNER, MAX_HANDOFF_BYTES: "32768",
+      PODAJ_ACCESS: demo ? "public" : "private", PODAJ_API_AUTH_SECRET: OWNER, MAX_HANDOFF_BYTES: "32768",
       ...(demo ? { TURNSTILE_SITE_KEY: "synthetic-site-key", TURNSTILE_SECRET_KEY: "synthetic-siteverify-secret" } : {}),
     },
     ratelimits: demo ? { PUBLIC_API_LIMITER: { simple: { limit: 60, period: 60 } } } : {},

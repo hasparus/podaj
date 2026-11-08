@@ -1,12 +1,11 @@
-import type { InitArgs } from "./init-args.js";
+import type { ConfigArgs } from "./config-args.js";
+import type { PodajConfig } from "./config.js";
 import type { Probe } from "./instance.js";
 import type { ClientConfig } from "../src/handoffs/protocol.js";
+import { originOf } from "./instance.js";
 
-export type InitMode = "connect" | "deploy";
-export interface SavedInit { url: string; token: string; mode: InitMode }
-export interface InitIo {
+export interface SetupIo {
   isTTY: boolean;
-  chooseMode: () => Promise<InitMode>;
   askUrl: () => Promise<string>;
   askTokenSource: () => Promise<"have" | "set">;
   askToken: () => Promise<string>;
@@ -22,23 +21,21 @@ export interface InitIo {
   ensureClient: () => void;
   mintToken: () => string;
   workersUrl: (output: string) => string;
-  save: (config: SavedInit) => void;
+  save: (config: PodajConfig) => void;
 }
-
-import { originOf } from "./instance.js";
 
 const rejectProbe = (verdict: Probe) => {
   if (verdict === "unauthorized") throw new Error("that instance token was rejected");
   if (verdict === "locked") {
-    throw new Error("this worker has no instance token yet. Run podaj init in a terminal and choose to set one.");
+    throw new Error("this worker has no instance token yet. Run podaj config in a terminal and choose to set one.");
   }
   throw new Error("could not reach a podaj access endpoint at that url");
 };
 
-const ensureCloudflare = (io: InitIo) => {
+const ensureCloudflare = (io: SetupIo) => {
   if (io.whoami()) return;
   if (!io.isTTY) {
-    throw new Error("Cloudflare is not logged in. Run wrangler login, then podaj init --deploy");
+    throw new Error("Cloudflare is not logged in. Run podaj deploy in a terminal to log in first.");
   }
   io.note("Cloudflare needs a browser login. Waiting until that finishes.");
   io.login();
@@ -54,15 +51,15 @@ const redacted = async (token: string, action: () => Promise<void>) => {
   }
 };
 
-const connect = async (url: string, token: string, io: InitIo) => redacted(token, async () => {
+const connect = async (url: string, token: string, io: SetupIo) => redacted(token, async () => {
   const origin = originOf(url);
   await io.config(origin);
   const verdict = await io.probe(origin, token);
   if (verdict !== "ok") rejectProbe(verdict);
-  io.save({ mode: "connect", token, url: origin });
+  io.save({ token, url: origin });
 });
 
-const connectNewToken = async (url: string, io: InitIo) => {
+const connectNewToken = async (url: string, io: SetupIo) => {
   const origin = originOf(url);
   ensureCloudflare(io);
   const name = await io.askWorkerName();
@@ -73,43 +70,35 @@ const connectNewToken = async (url: string, io: InitIo) => {
     if (verdict !== "ok") {
       throw new Error(`secret was stored on ${name} but the access check returned ${verdict}`);
     }
-    io.save({ mode: "connect", token, url: origin });
+    io.save({ token, url: origin });
   });
 };
 
-const deploy = async (io: InitIo) => {
+/** A successful deployment also configures subsequent wait commands. */
+export const runDeploy = async (io: SetupIo) => {
   io.ensureClient();
   ensureCloudflare(io);
   const configPath = io.stage();
   const output = io.deploy(configPath);
-  const url = io.workersUrl(output);
+  const url = originOf(io.workersUrl(output));
   const token = io.mintToken();
   await redacted(token, async () => {
     io.putSecret({ configPath }, token);
-    io.save({ mode: "deploy", token, url });
+    io.save({ token, url });
   });
 };
 
-export const runInit = async (args: InitArgs, io: InitIo) => {
+export const runConfig = async (args: ConfigArgs, io: SetupIo) => {
   if (args.url !== undefined) {
     await connect(args.url, args.token ?? "", io);
     return;
   }
-  if (args.deploy) {
-    await deploy(io);
-    return;
-  }
   if (!io.isTTY) {
-    throw new Error("podaj init needs a terminal, or pass --url (private instances need a token), or --deploy");
-  }
-  const mode = await io.chooseMode();
-  if (mode === "deploy") {
-    await deploy(io);
-    return;
+    throw new Error("podaj config needs a terminal, or pass --url (private instances need a token on stdin)");
   }
   const url = originOf(await io.askUrl());
   const config = await io.config(url);
-  if (config.mode === "demo") {
+  if (config.access === "public") {
     await connect(url, "", io);
     return;
   }

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import type { InitArgs } from "./init-args.js";
+import type { ConfigArgs } from "./config-args.js";
+import type { SetupIo } from "./setup-flow.js";
 import type { Reservation } from "../src/handoffs/protocol.js";
 import {
   cancel,
@@ -22,11 +23,12 @@ import { decryptHandoff } from "./decrypt-handoff.js";
 import {
   defaultConfigPath,
   readConfig,
+  resolveConnection,
   writeConfig,
 } from "./config.js";
 import { composeUrl, workersUrl } from "./deploy-text.js";
-import { initArgs } from "./init-args.js";
-import { runInit } from "./init-flow.js";
+import { configArgs } from "./config-args.js";
+import { runConfig, runDeploy } from "./setup-flow.js";
 import { authHeaders, authorizeDemo, instanceConfig, originOf, probeInstance, recipientIdentity } from "./instance.js";
 import { keyDir } from "./keygen.js";
 import { generateKeypair } from "./keypair.js";
@@ -41,15 +43,16 @@ const KEY_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 
 const usage = () => {
   console.error(`usage:
-  podaj init
-  podaj init --url https://<name>.workers.dev   # private: PODAJ_API_AUTH_SECRET on stdin
-  podaj init --deploy
   podaj wait [KEY ...]
+  podaj deploy
+  podaj config
+  podaj config --url https://<name>.workers.dev   # private: PODAJ_API_AUTH_SECRET on stdin
   podaj keygen
   podaj decrypt [PODAJ1.blob]
 
-init   connect to a worker you already deployed, or deploy one after Cloudflare login
-wait   reserve a fill link, block until those keys are pasted, print them as JSON`);
+wait    request variables using podaj.fyi by default; print the result as JSON
+deploy  deploy your own worker and save its connection automatically
+config  connect to an existing worker without deploying`);
   process.exit(2);
 };
 
@@ -82,21 +85,15 @@ const capture = (bin: string, args: string[], opts: { input?: string; redact?: s
 };
 
 const runtimeConfig = () => {
-  const file = readConfig(defaultConfigPath());
-  const url = (process.env.PODAJ_URL ?? file?.url ?? "").replace(/\/$/u, "");
-  const savedToken = file !== null && originOf(file.url) === originOf(url) ? file.token : "";
-  const token = readStdinToken() ?? process.env.PODAJ_API_AUTH_SECRET ?? savedToken;
-  if (url.length === 0) {
-    throw new Error("no podaj url — run podaj init");
-  }
-  return { token, url: originOf(url) };
+  const config = resolveConnection(process.env, readConfig(defaultConfigPath()));
+  return { ...config, token: readStdinToken() ?? config.token };
 };
 
 const fail: (message: string) => never = (message) => {
   throw new Error(message);
 };
 
-const tokenOnStdin = (args: InitArgs) => {
+const tokenOnStdin = (args: ConfigArgs) => {
   if (!args.tokenStdin && (args.url === undefined || args.token !== undefined)) {
     return args;
   }
@@ -107,15 +104,18 @@ const tokenOnStdin = (args: InitArgs) => {
   return { ...args, ...(token === undefined ? {} : { token }), tokenStdin: false };
 };
 
-const init = async (argv: string[]) => {
-  const args = tokenOnStdin(initArgs(argv));
+const setup = async (command: "config" | "deploy", argv: string[]) => {
+  if (command === "deploy" && argv.length > 0) {
+    throw new Error("podaj deploy does not accept arguments");
+  }
+  const args: ConfigArgs = command === "config" ? tokenOnStdin(configArgs(argv)) : { tokenStdin: false };
   const tty = process.stdin.isTTY === true && process.stdout.isTTY === true;
-  const interactive = tty && !args.deploy && args.url === undefined;
+  const interactive = tty && args.url === undefined;
   if (interactive) {
     intro("podaj");
   }
   const wrangler = packageTool("wrangler");
-  await runInit(args, {
+  const io = {
     askToken: () =>
       answered(
         password({
@@ -175,25 +175,6 @@ const init = async (argv: string[]) => {
           message: "Worker name",
         }),
       ),
-    chooseMode: async () => {
-      const mode = await answered(
-        select({
-          message: "Where is your podaj?",
-          options: [
-            {
-              hint: "Deploy to Cloudflare button in the README",
-              label: "I already deployed one",
-              value: "connect",
-            },
-            { label: "Deploy a new worker", value: "deploy" },
-          ],
-        }),
-      );
-      if (mode !== "connect" && mode !== "deploy") {
-        throw new Error(`unexpected choice ${mode}`);
-      }
-      return mode;
-    },
     deploy: (configPath) =>
       capture(wrangler, ["deploy", "--config", configPath]),
     ensureClient: () => {
@@ -243,7 +224,7 @@ const init = async (argv: string[]) => {
         outro(config.url);
       }
       process.stdout.write(
-        `${JSON.stringify({ config: file, mode: config.mode, url: config.url }, null, 2)}\n`,
+        `${JSON.stringify({ config: file, url: config.url }, null, 2)}\n`,
       );
     },
     stage: () =>
@@ -251,10 +232,14 @@ const init = async (argv: string[]) => {
         packageRoot: repoRoot,
         stage: workerStageDir(homedir()),
       }),
-    whoami: () =>
-      spawnSync(process.execPath, [wrangler, "whoami"], { encoding: "utf8" }).status === 0,
+    whoami: () => {
+      const result = spawnSync(process.execPath, [wrangler, "whoami"], { encoding: "utf8" });
+      return result.status === 0 && result.stdout.includes("You are logged in with");
+    },
     workersUrl,
-  });
+  } satisfies SetupIo;
+  if (command === "deploy") await runDeploy(io);
+  else await runConfig(args, io);
 };
 
 const wait = async (keys: string[]) => {
@@ -271,7 +256,7 @@ const wait = async (keys: string[]) => {
   });
   const { fingerprint } = recipientIdentity(publicPem);
   const config = await instanceConfig(url);
-  const creationToken = config.mode === "demo"
+  const creationToken = config.access === "public"
     ? await authorizeDemo(url, publicPem, (message) => process.stderr.write(`${message}\n`))
     : token;
   const response = await fetch(new URL("/api/handoffs/reserve", url), {
@@ -344,8 +329,9 @@ const [command, ...rest] = process.argv.slice(2);
 
 try {
   switch (command) {
-    case "init":
-      await init(rest);
+    case "config":
+    case "deploy":
+      await setup(command, rest);
       break;
     case "wait":
       await wait(rest);

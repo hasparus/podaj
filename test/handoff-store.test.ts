@@ -32,7 +32,7 @@ const input = (value = 1, creatorHash: string | null = null): ReserveInput => ({
 });
 const ciphertext = "PODAJ1.encrypted";
 const databases: ReturnType<typeof sqliteStorage>["database"][] = [];
-const setup = (config: HandoffStoreConfig = { PODAJ_MODE: "demo" }, start = 10 * DAY) => {
+const setup = (config: HandoffStoreConfig = { PODAJ_ACCESS: "public" }, start = 10 * DAY) => {
   const { database, storage, statements } = sqliteStorage();
   databases.push(database);
   let now = start;
@@ -354,12 +354,32 @@ describe("SQLite handoff state machine", () => {
     expect(store.fill(input().id, input().writeHash, "PODAJ1.éé").status).toBe(200);
   });
 
+  it.each(["demo", "", "PUBLIC", "unknown", null, 1])("rejects invalid store access %j before creating or mutating tables", (access) => {
+    const { database, storage, statements } = sqliteStorage();
+    databases.push(database);
+    expect(() => new HandoffStore(storage, { PODAJ_ACCESS: access as string })).toThrow(expect.objectContaining({
+      code: "invalid access", status: 503,
+    }));
+    expect(statements).toHaveLength(0);
+  });
+
+  it("defaults absent access to private and ignores the removed binding", () => {
+    for (const config of [
+      { MAX_HANDOFF_BYTES: "40000", HANDOFF_TTL_SECONDS: "86400" },
+      { PODAJ_MODE: "demo", MAX_HANDOFF_BYTES: "40000", HANDOFF_TTL_SECONDS: "86400" },
+    ]) {
+      const instance = setup(config);
+      expect(instance.store.reserve(input())).toMatchObject({ status: 201, body: { expiresAt: instance.now() + DAY } });
+      expect(instance.store.fill(input().id, input().writeHash, `PODAJ1.${"a".repeat(32762)}`).status).toBe(200);
+    }
+  });
+
   it("clamps public byte and TTL overrides but supports private retention", () => {
-    const demo = setup({ PODAJ_MODE: "demo", MAX_HANDOFF_BYTES: "1000000", HANDOFF_TTL_SECONDS: "86400" });
+    const demo = setup({ PODAJ_ACCESS: "public", MAX_HANDOFF_BYTES: "1000000", HANDOFF_TTL_SECONDS: "86400" });
     expect(demo.store.reserve(input())).toMatchObject({ status: 201, body: { expiresAt: demo.now() + 2 * HOUR } });
     expect(demo.store.fill(input().id, input().writeHash, `PODAJ1.${"a".repeat(32762)}`).status).toBe(413);
     expect(demo.store.fill(input().id, input().writeHash, `PODAJ1.${"a".repeat(32761)}`).status).toBe(200);
-    const privateInstance = setup({ PODAJ_MODE: "private", MAX_HANDOFF_BYTES: "40000", HANDOFF_TTL_SECONDS: "86400" });
+    const privateInstance = setup({ PODAJ_ACCESS: "private", MAX_HANDOFF_BYTES: "40000", HANDOFF_TTL_SECONDS: "86400" });
     expect(privateInstance.store.reserve(input())).toMatchObject({ status: 201, body: { expiresAt: privateInstance.now() + DAY } });
     expect(privateInstance.store.fill(input().id, input().writeHash, `PODAJ1.${"a".repeat(32762)}`).status).toBe(200);
   });

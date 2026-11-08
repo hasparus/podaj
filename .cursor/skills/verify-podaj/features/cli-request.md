@@ -1,7 +1,7 @@
 # CLI request
 
 - Start the compiled `dist/scripts/podaj.js` under the isolated environment described in [SKILL.md](../SKILL.md). Do not use an installed/global/npm CLI.
-- `init --url "$URL"` saves only URL/token config under scratch; it does not require a recipient key file.
+- `config --url "$URL"` saves only URL/token config under scratch; it does not require a recipient key file.
 - Each `wait` generates a new RSA-2048 keypair in memory and reserves with its public key. Do not run keygen or write a private key to disk for this flow.
 - stderr lists requested keys and exactly one fill URL: `$URL/s/<32-lowercase-hex-id>#write=<64-lowercase-hex>&recipient=<base64url-SPKI>`.
 - Validate the URL origin and fragment shape without publishing capabilities. Recipient fingerprint must match the CLI's request key, not an untrusted server substitution.

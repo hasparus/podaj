@@ -18,9 +18,9 @@ Default retention is two hours from reservation, restarted only by the first suc
 
 ## Admission and resource limits
 
-Private creation requires `PODAJ_API_AUTH_SECRET` off localhost. It is an application credential, not a Cloudflare management token or encryption key. It never reaches the human's browser. Config files are atomically replaced with mode 0600 inside a private directory; saved credentials are not reused for a different `PODAJ_URL` origin.
+Workers default to `PODAJ_ACCESS=private`; private creation requires `PODAJ_API_AUTH_SECRET` off localhost. It is an application credential, not a Cloudflare management token or encryption key. It never reaches the human's browser. Config files are atomically replaced with mode 0600 inside a private directory; saved credentials are not reused for a different `PODAJ_URL` origin.
 
-Demo creation requires a verified, recipient-bound credential. Turnstile runs only on `/authorize`, away from plaintext and private keys. Siteverify must confirm the hostname, `podaj-admission` action, and `SHA256(challenge + "." + recipientFingerprint)` cdata. The browser sees a challenge, never its verifier. Missing verification settings or the rate-limit binding refuse new admission; existing scoped delivery capabilities do not require working captcha configuration.
+`PODAJ_ACCESS=public` requires a verified, recipient-bound credential for creation, including on the hosted demo. Turnstile runs only on `/authorize`, away from plaintext and private keys. Siteverify must confirm the hostname, `podaj-admission` action, and `SHA256(challenge + "." + recipientFingerprint)` cdata. The browser sees a challenge, never its verifier. Missing verification settings or the rate-limit binding refuse new admission; existing scoped delivery capabilities do not require working captcha configuration.
 
 Limits: 200 reservations/day and live slots, five reservations/credential/day, 32 KiB demo ciphertext, 500 verification attempts/day, ten attempts/IP/minute, and 200 approvals/day. The transport limiter admits 60 requests/IP/minute. Native hibernating sockets are capped at 20 globally, two/slot, and ten minutes each; socket expiry falls back to polling rather than declaring a live handoff gone. HTTP bodies have byte limits, strict JSON/envelope validation, and a ten-second read deadline.
 
