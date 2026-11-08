@@ -156,6 +156,10 @@ describe("Node dependency tools and actual terminal prompts", { timeout: 20_000 
       expect(result.output).toContain("Cloudflare needs a browser login");
       const calls = readFileSync(instance.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line));
       expect(calls.map((call) => call.args[0])).toEqual(["whoami", "login", "whoami", "deploy", "secret"]);
+      const workspace = join(instance.home, ".local/share/podaj/wrangler");
+      const stage = join(instance.home, ".local/share/podaj/worker");
+      expect(calls.map((call) => call.cwd)).toEqual([workspace, workspace, workspace, stage, stage]);
+      expect(calls[1].tty).toEqual([true, true, true]);
       expect(JSON.parse(readFileSync(instance.configFile, "utf8")).url).toBe("https://installed-fixture.example.workers.dev");
     } finally { rmSync(instance.home, { recursive: true, force: true }); }
   });
@@ -171,15 +175,17 @@ describe("Node dependency tools and actual terminal prompts", { timeout: 20_000 
       const calls = readFileSync(instance.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line));
       const staged = join(instance.home, ".local/share/podaj/worker/wrangler.json");
       expect(calls).toEqual([
-        { args: ["whoami"], stdinBytes: 0 },
-        { args: ["deploy", "--config", staged], stdinBytes: 0 },
-        { args: ["secret", "put", "PODAJ_API_AUTH_SECRET", "--config", staged], stdinBytes: 65 },
+        expect.objectContaining({ args: ["whoami"], stdinBytes: 0, cwd: join(instance.home, ".local/share/podaj/wrangler"), tty: [false, false, false], account: null, outputMode: 0o600 }),
+        expect.objectContaining({ args: ["deploy", "--config", staged], stdinBytes: 0, cwd: join(instance.home, ".local/share/podaj/worker"), tty: [true, true, true], account: null, outputMode: 0o600 }),
+        expect.objectContaining({ args: ["secret", "put", "PODAJ_API_AUTH_SECRET", "--config", staged], stdinBytes: 65, cwd: join(instance.home, ".local/share/podaj/worker"), tty: [false, false, false], account: "a".repeat(32), outputMode: 0o600 }),
       ]);
       const saved = JSON.parse(readFileSync(instance.configFile, "utf8"));
       expect(saved).toEqual({ url: "https://installed-fixture.example.workers.dev", token: expect.stringMatching(/^[a-f0-9]{64}$/u) });
       expect(result.output).toContain(instance.configFile);
       expect(result.output).not.toContain('"mode"');
       expect(result.output).not.toContain(saved.token);
+      expect(JSON.parse(readFileSync(staged, "utf8")).account_id).toBe("a".repeat(32));
+      expect(existsSync(join(instance.home, "node_modules/.cache/wrangler"))).toBe(false);
     } finally { rmSync(instance.home, { recursive: true, force: true }); }
   });
 });

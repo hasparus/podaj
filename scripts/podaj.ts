@@ -26,7 +26,7 @@ import {
   resolveConnection,
   writeConfig,
 } from "./config.js";
-import { composeUrl, workersUrl } from "./deploy-text.js";
+import { composeUrl } from "./deploy-text.js";
 import { configArgs } from "./config-args.js";
 import { runConfig, runDeploy } from "./setup-flow.js";
 import { authHeaders, authorizeDemo, instanceConfig, originOf, probeInstance, recipientIdentity } from "./instance.js";
@@ -37,6 +37,7 @@ import { selectVars } from "./select-vars.js";
 import { readStdinToken } from "./stdin-token.js";
 import { clientBuilt, stageWorker, workerStageDir } from "./stage-worker.js";
 import { waitReady } from "./wait-ready.js";
+import { createWrangler } from "./wrangler.js";
 
 const repoRoot = packageRoot(import.meta.url);
 const KEY_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
@@ -65,23 +66,18 @@ const answered = async (answer: Promise<string | symbol>): Promise<string> => {
   return value;
 };
 
-const capture = (bin: string, args: string[], opts: { input?: string; redact?: string } = {}) => {
-  const result = spawnSync(process.execPath, [bin, ...args], {
+const buildClient = () => {
+  const result = spawnSync(process.execPath, [packageTool("vite"), "build"], {
     cwd: repoRoot,
     encoding: "utf8",
-    input: opts.input,
-    stdio: ["pipe", "pipe", "pipe"],
+    stdio: ["ignore", 2, 2],
   });
-  const raw = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-  const output = opts.redact ? raw.replaceAll(opts.redact, "[redacted]") : raw;
-  process.stderr.write(output);
   if (result.error !== undefined) {
     throw result.error;
   }
   if (result.status !== 0) {
-    throw new Error(`${args.join(" ")} failed`);
+    throw new Error("Vite build failed");
   }
-  return output;
 };
 
 const runtimeConfig = () => {
@@ -114,7 +110,10 @@ const setup = async (command: "config" | "deploy", argv: string[]) => {
   if (interactive) {
     intro("podaj");
   }
-  const wrangler = packageTool("wrangler");
+  const wrangler = createWrangler({
+    bin: packageTool("wrangler"),
+    workspace: join(homedir(), ".local", "share", "podaj", "wrangler"),
+  });
   const io = {
     askToken: () =>
       answered(
@@ -175,8 +174,7 @@ const setup = async (command: "config" | "deploy", argv: string[]) => {
           message: "Worker name",
         }),
       ),
-    deploy: (configPath) =>
-      capture(wrangler, ["deploy", "--config", configPath]),
+    deploy: wrangler.deploy,
     ensureClient: () => {
       if (clientBuilt(repoRoot)) {
         return;
@@ -186,34 +184,17 @@ const setup = async (command: "config" | "deploy", argv: string[]) => {
           "client build is missing. Reinstall podaj so dist/client ships with the package.",
         );
       }
-      capture(packageTool("vite"), ["build"]);
+      buildClient();
     },
     isTTY: tty,
-    login: () => {
-      const child = spawnSync(process.execPath, [wrangler, "login"], { stdio: "inherit" });
-      if (child.error !== undefined) {
-        throw child.error;
-      }
-      if (child.status !== 0) {
-        throw new Error("Cloudflare login failed");
-      }
-    },
+    login: wrangler.login,
     mintToken: () => randomBytes(32).toString("hex"),
     note: (message) => {
       log.info(message);
     },
     config: instanceConfig,
     probe: probeInstance,
-    putSecret: (target, token) => {
-      const secretArgs = ["secret", "put", "PODAJ_API_AUTH_SECRET"];
-      if (target.configPath !== undefined) {
-        secretArgs.push("--config", target.configPath);
-      }
-      if (target.name !== undefined) {
-        secretArgs.push("--name", target.name);
-      }
-      capture(wrangler, secretArgs, { input: `${token}\n`, redact: token });
-    },
+    putSecret: wrangler.putSecret,
     save: (config) => {
       const file = defaultConfigPath();
       writeConfig(file, {
@@ -232,11 +213,7 @@ const setup = async (command: "config" | "deploy", argv: string[]) => {
         packageRoot: repoRoot,
         stage: workerStageDir(homedir()),
       }),
-    whoami: () => {
-      const result = spawnSync(process.execPath, [wrangler, "whoami"], { encoding: "utf8" });
-      return result.status === 0 && result.stdout.includes("You are logged in with");
-    },
-    workersUrl,
+    whoami: wrangler.whoami,
   } satisfies SetupIo;
   if (command === "deploy") await runDeploy(io);
   else await runConfig(args, io);

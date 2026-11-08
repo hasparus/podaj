@@ -28,7 +28,6 @@ const fake = (over: Partial<SetupIo> = {}) => {
     save: (config) => { saved = config; },
     stage: () => "/stage/wrangler.json",
     whoami: () => true,
-    workersUrl: (output) => output,
     ...over,
   };
   return { saved: () => saved, value };
@@ -128,8 +127,7 @@ describe("runDeploy", () => {
       ensureClient: () => { events.push("client"); },
       whoami: () => { events.push("whoami"); return true; },
       stage: () => { events.push("stage"); return "/stage/wrangler.json"; },
-      deploy: (path) => { expect(path).toBe("/stage/wrangler.json"); events.push("deploy"); return "deployment output"; },
-      workersUrl: (output) => { expect(output).toBe("deployment output"); return "https://podaj.example.workers.dev"; },
+      deploy: (path) => { expect(path).toBe("/stage/wrangler.json"); events.push("deploy"); return "https://podaj.example.workers.dev"; },
       mintToken: () => { events.push("mint"); return "minted-token"; },
       putSecret: (target, token) => {
         expect(target).toEqual({ configPath: "/stage/wrangler.json" });

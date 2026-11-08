@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { buildSync } from "esbuild";
 
 import { configPath, DEFAULT_URL, readConfig, resolveConnection, writeConfig } from "../scripts/config.js";
-import { composeUrl, workersUrl } from "../scripts/deploy-text.js";
+import { composeUrl } from "../scripts/deploy-text.js";
 import { recipientIdentity } from "../scripts/instance.js";
 import { selectVars } from "../scripts/select-vars.js";
 import { packageRoot, packageTool } from "../scripts/package-paths.js";
@@ -110,11 +110,6 @@ describe("selectVars", () => {
 });
 
 describe("deploy text", () => {
-  it("reads the workers.dev url", () => {
-    expect(
-      workersUrl("Deployed podaj\n  https://podaj.me.workers.dev\n"),
-    ).toBe("https://podaj.me.workers.dev");
-  });
   it("puts only the write capability and own SPKI in the fill fragment", () => {
     const { publicKey } = generateKeyPairSync("rsa", {
       modulusLength: 2048,

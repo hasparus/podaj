@@ -1,15 +1,19 @@
 import { execFile } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { parse } from "jsonc-parser";
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { seal } from "../src/crypto/podaj1.js";
+import { packageTool } from "../scripts/package-paths.js";
+import { localCloudflare, syntheticAccounts } from "./helpers/cloudflare-api.js";
+import { runTerminal } from "./helpers/terminal.js";
 
 const exec = promisify(execFile);
 interface WorkerConfig {
@@ -111,7 +115,7 @@ describe("extracted real npm package in a hoisted installation", () => {
   });
 
   it("actually resolves the hoisted Node Wrangler entry and stages canonical configuration without rewriting it", async () => {
-    expect(staged).toEqual({ ...canonical, main: "entry.ts", assets: { ...canonical.assets, directory: "assets" } });
+    expect(staged).toEqual({ ...canonical, account_id: "a".repeat(32), main: "entry.ts", assets: { ...canonical.assets, directory: "assets" } });
     expect(staged.name).toBe("installed-nondefault-worker");
     expect(staged.vars.HANDOFF_TTL_SECONDS).toBe("3600");
     expect(await readFile(join(root, "wrangler.jsonc"), "utf8")).toBe(sourceConfig);
@@ -123,6 +127,7 @@ describe("extracted real npm package in a hoisted installation", () => {
       ["secret", "put", "PODAJ_API_AUTH_SECRET", "--config", join(stage, "wrangler.json")],
     ]);
     expect(calls.map((call) => call.stdinBytes)).toEqual([0, 0, 65]);
+    expect(existsSync(join(home, "install/node_modules/.cache/wrangler"))).toBe(false);
     expect((await runtime.dispatchFetch("http://localhost/api/config")).status).toBe(200);
     expect(await (await runtime.dispatchFetch("http://localhost/api/config")).json()).toMatchObject({ handoffTtlSeconds: 3600, maxHandoffBytes: 40000 });
   });
@@ -157,6 +162,64 @@ describe("extracted real npm package in a hoisted installation", () => {
     expect(fill.status).toBe(200);
     expect(await fill.text()).toBe(await readFile(join(stage, "assets/index.html"), "utf8"));
   });
+
+  it("uses real Wrangler from a read-only packed adapter without writing any installed cache", async () => {
+    const api = await localCloudflare();
+    const modes: [string, number][] = [];
+    const protect = async (path: string) => {
+      const info = await stat(path);
+      modes.push([path, info.mode & 0o777]);
+      if (info.isDirectory()) {
+        for (const child of await readdir(path)) await protect(join(path, child));
+      }
+      await chmod(path, info.isDirectory() ? 0o555 : 0o444);
+    };
+    const readonlyStage = join(home, "readonly-stage");
+    const workspace = join(home, "readonly-workspace");
+    const driver = join(home, "readonly-driver.mjs");
+    const guard = join(home, "readonly-network-guard.cjs");
+    const configPath = join(readonlyStage, "wrangler.json");
+    try {
+      await mkdir(readonlyStage);
+      await writeFile(configPath, JSON.stringify({ name: "synthetic-worker", main: "entry.js", compatibility_date: "2025-10-11" }));
+      await writeFile(join(readonlyStage, "entry.js"), "export default { fetch() { return new Response('synthetic'); } };\n");
+      await build({ entryPoints: [resolve("test/helpers/wrangler-driver.ts")], outfile: driver, platform: "node", format: "esm", target: "node22" });
+      await build({ entryPoints: [resolve("test/helpers/local-network-only.ts")], outfile: guard, platform: "node", format: "cjs", target: "node22" });
+      await protect(root);
+      const modules = dirname(root);
+      modes.push([modules, (await stat(modules)).mode & 0o777]);
+      await chmod(modules, 0o555);
+      if (process.geteuid?.() !== 0) {
+        await expect(writeFile(join(root, "readonly-sentinel"), "blocked")).rejects.toMatchObject({ code: "EACCES" });
+        await expect(mkdir(join(modules, ".cache"))).rejects.toMatchObject({ code: "EACCES" });
+      }
+      const result = await runTerminal({
+        command: [process.execPath, driver, packageTool("wrangler"), workspace, "deploy", configPath],
+        cwd: root,
+        env: {
+          HOME: home, XDG_CONFIG_HOME: join(home, "readonly-config"), PATH: "/nonexistent", TERM: "xterm-256color", NO_COLOR: "1",
+          PODAJ_TEST_ADAPTER: pathToFileURL(join(root, "dist/scripts/wrangler.js")).href,
+          NODE_OPTIONS: `--require=${guard}`,
+          CLOUDFLARE_API_BASE_URL: api.url, CLOUDFLARE_API_TOKEN: "synthetic-local-api-token",
+        },
+        steps: [["Select an account", "\u001b[B\r"]], timeoutMs: 20_000,
+      });
+      expect(result.code).not.toBe(0);
+      expect(result.output).not.toContain("EACCES");
+      expect(result.output).not.toContain("unable to select one in non-interactive mode");
+      const cache = JSON.parse(await readFile(join(readonlyStage, "node_modules/.cache/wrangler/wrangler-account.json"), "utf8"));
+      expect(cache.account.id).toBe(syntheticAccounts[1]);
+      expect(api.requests.some((request) => request.path.startsWith(`/accounts/${syntheticAccounts[1]}/`))).toBe(true);
+      expect(api.requests.every((request) => request.method === "GET")).toBe(true);
+      expect(existsSync(join(modules, ".cache"))).toBe(false);
+      expect(existsSync(join(root, "node_modules"))).toBe(false);
+      expect(await readFile(join(root, "wrangler.jsonc"), "utf8")).toBe(sourceConfig);
+      expect(await readdir(workspace)).toEqual(["node_modules"]);
+    } finally {
+      for (const [path, mode] of modes.reverse()) await chmod(path, mode);
+      await api.close();
+    }
+  }, 30_000);
 
   it("decrypts a browser-sealed payload through the packed Node bin and its shared compiled envelope parser", async () => {
     const pair = generateKeyPairSync("rsa", { modulusLength: 2048, publicKeyEncoding: { type: "spki", format: "pem" }, privateKeyEncoding: { type: "pkcs8", format: "pem" } });

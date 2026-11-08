@@ -20,7 +20,6 @@ export interface SetupIo {
   stage: () => string;
   ensureClient: () => void;
   mintToken: () => string;
-  workersUrl: (output: string) => string;
   save: (config: PodajConfig) => void;
 }
 
@@ -79,8 +78,7 @@ export const runDeploy = async (io: SetupIo) => {
   io.ensureClient();
   ensureCloudflare(io);
   const configPath = io.stage();
-  const output = io.deploy(configPath);
-  const url = originOf(io.workersUrl(output));
+  const url = originOf(io.deploy(configPath));
   const token = io.mintToken();
   await redacted(token, async () => {
     io.putSecret({ configPath }, token);

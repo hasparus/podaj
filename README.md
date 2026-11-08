@@ -9,7 +9,7 @@ podaj wait API_KEY
 
 Requires Node.js 22+. Uses the public demo at `https://podaj.fyi` by default—no deployment or configuration needed. Approve the request in your browser, then share the fill link and keep the CLI running.
 
-**Release status:** npm publication and the live demo rollout are still pending. The commands above describe the release interface.
+The [release workflow](https://github.com/hasparus/podaj/actions/workflows/release.yml) checks the build, deploys the demo, and publishes to npm. Deployments and releases run in CI.
 
 ## Self-hosting (optional)
 

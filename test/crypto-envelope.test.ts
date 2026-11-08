@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { openPodaj1 } from "../scripts/open-podaj1.js";
 import { encodePodaj1Envelope, parsePodaj1Envelope } from "../src/crypto/envelope.js";
@@ -88,8 +88,10 @@ describe("shared strict PODAJ1 envelope", () => {
   });
 
   it("handles large ciphertext without spreading it into one function call", () => {
-    const envelope = { iv: new Uint8Array(12), wrappedKey: new Uint8Array(256), ciphertext: new Uint8Array(500_000) };
-    expect(parsePodaj1Envelope(encodePodaj1Envelope(envelope))).toEqual(envelope);
+    const envelope = { iv: new Uint8Array(12), wrappedKey: new Uint8Array(256), ciphertext: new Uint8Array(randomBytes(500_000)) };
+    const { ciphertext, ...header } = parsePodaj1Envelope(encodePodaj1Envelope(envelope));
+    expect(header).toEqual({ iv: envelope.iv, wrappedKey: envelope.wrappedKey });
+    expect(Buffer.from(ciphertext).equals(envelope.ciphertext)).toBe(true);
   });
 
   it.each([["v", 2], ["v", null], ["env", "production"], ["env", null]] as const)("rejects mutated %s even with otherwise valid ciphertext", (name, value) => {
