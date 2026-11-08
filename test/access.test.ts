@@ -11,7 +11,7 @@ describe("accessFor", () => {
     ).toBe("ok");
   });
 
-  it("locks a public host until PODAJ_TOKEN is set", () => {
+  it("locks a public host until PODAJ_API_AUTH_SECRET is set", () => {
     expect(
       accessFor(new Request("https://podaj.example.workers.dev/"), undefined),
     ).toBe("locked");

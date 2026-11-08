@@ -1,16 +1,8 @@
+import { encodePodaj1Envelope } from "./envelope.js";
+
 export type EnvVar = { key: string; value: string };
 
 export type HandoffVariables = { vars: EnvVar[] };
-
-const PREFIX = "PODAJ1.";
-
-type Podaj1Envelope = {
-  v: 1;
-  env: string;
-  iv: string;
-  ciphertext: string;
-  wrappedKey: string;
-};
 
 const b64 = (bytes: Uint8Array): string =>
   btoa(String.fromCharCode(...bytes));
@@ -42,13 +34,38 @@ export const publicKeyFingerprint = async (pem: string): Promise<string> => {
   const hex = [...new Uint8Array(hash)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
-  return hex.slice(0, 16);
+  return hex;
+};
+
+export const publicKeyToFragment = (pem: string): string =>
+  b64(pemBody(pem, "PUBLIC KEY"))
+    .replace(/\+/gu, "-").replace(/\//gu, "_").replace(/[=]+$/u, "");
+
+export const publicKeyFromFragment = (fragment: string): string => {
+  if (!/^[A-Za-z0-9_-]{300,1600}$/u.test(fragment) || fragment.length % 4 === 1) {
+    throw new Error("Invalid recipient key in link.");
+  }
+  const base64 = fragment.replace(/-/gu, "+").replace(/_/gu, "/");
+  const bytes = b64dec(base64.padEnd(Math.ceil(base64.length / 4) * 4, "="));
+  const pem = `-----BEGIN PUBLIC KEY-----\n${b64(bytes)}\n-----END PUBLIC KEY-----`;
+  if (publicKeyToFragment(pem) !== fragment) throw new Error("Invalid recipient key in link.");
+  return pem;
+};
+
+export const validateRecipientPublicKey = async (pem: string): Promise<void> => {
+  const key = await crypto.subtle.importKey(
+    "spki", owned(pemBody(pem, "PUBLIC KEY")).buffer,
+    { name: "RSA-OAEP", hash: "SHA-256" }, false, ["encrypt"],
+  );
+  const algorithm = key.algorithm as RsaHashedKeyAlgorithm;
+  if (algorithm.modulusLength < 2048 || algorithm.modulusLength > 4096) {
+    throw new Error("Choose an RSA key between 2048 and 4096 bits.");
+  }
 };
 
 export async function seal(
   payload: HandoffVariables,
   publicKeyPem: string,
-  env: string,
 ): Promise<string> {
   const pubKey = await crypto.subtle.importKey(
     "spki",
@@ -75,51 +92,9 @@ export async function seal(
     pubKey,
     rawAes,
   );
-  const envelope: Podaj1Envelope = {
-    v: 1,
-    env,
-    iv: b64(iv),
-    ciphertext: b64(new Uint8Array(ctBuf)),
-    wrappedKey: b64(new Uint8Array(ekBuf)),
-  };
-  return PREFIX + btoa(JSON.stringify(envelope));
-}
-
-export async function open(
-  sealed: string,
-  privateKeyPem: string,
-): Promise<{ env: string; payload: HandoffVariables }> {
-  if (!sealed.startsWith(PREFIX)) {
-    throw new Error("expected PODAJ1 ciphertext");
-  }
-  const envelope = JSON.parse(atob(sealed.slice(PREFIX.length))) as Podaj1Envelope;
-  if (envelope.v !== 1) throw new Error("unsupported podaj version");
-  const priv = await crypto.subtle.importKey(
-    "pkcs8",
-    owned(pemBody(privateKeyPem, "PRIVATE KEY")).buffer,
-    { name: "RSA-OAEP", hash: "SHA-256" },
-    false,
-    ["decrypt"],
-  );
-  const rawAes = await crypto.subtle.decrypt(
-    { name: "RSA-OAEP" },
-    priv,
-    owned(b64dec(envelope.wrappedKey)),
-  );
-  const aesKey = await crypto.subtle.importKey(
-    "raw",
-    rawAes,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["decrypt"],
-  );
-  const plainBuf = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: owned(b64dec(envelope.iv)) },
-    aesKey,
-    owned(b64dec(envelope.ciphertext)),
-  );
-  const payload = JSON.parse(
-    new TextDecoder().decode(plainBuf),
-  ) as HandoffVariables;
-  return { env: envelope.env, payload };
+  return encodePodaj1Envelope({
+    iv,
+    ciphertext: new Uint8Array(ctBuf),
+    wrappedKey: new Uint8Array(ekBuf),
+  });
 }

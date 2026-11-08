@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer" content="no-referrer" />
+    <title>verify · podaj</title>
+    <link rel="stylesheet" href="/src/client/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="site-header"><span class="brand">podaj</span></header>
+      <main class="main">
+        <p class="compose-hint">verify to create a link</p>
+        <p class="compose-hint">This page verifies your request with Cloudflare. It receives only your public key and a verification challenge, never your private key or environment variables.</p>
+        <div id="turnstile"></div>
+        <p id="authorize-status" class="status" role="status" aria-live="polite">loading verification…</p>
+      </main>
+      <footer class="site-footer">Keep your CLI running. It will create the fill link after verification.</footer>
+    </div>
+    <script type="module" src="/src/authorize.ts"></script>
+  </body>
+</html>

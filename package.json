@@ -8,14 +8,14 @@
     "url": "git+https://github.com/hasparus/podaj.git"
   },
   "bin": {
-    "podaj": "scripts/podaj.mjs"
+    "podaj": "dist/scripts/podaj.js"
   },
   "files": [
-    "scripts",
+    "dist/scripts",
+    "dist/src",
     "src",
     "dist/client",
     "wrangler.jsonc",
-    "public/recipient.pem.example",
     "README.md"
   ],
   "type": "module",
@@ -24,17 +24,20 @@
   },
   "packageManager": "bun@1.4.4",
   "scripts": {
-    "build": "vite build",
-    "prepack": "vite build && rm -f dist/client/recipient.pem",
+    "build": "bun run build:cli && vite build",
+    "build:cli": "tsc -p tsconfig.scripts.build.json && chmod +x dist/scripts/podaj.js dist/scripts/hooks/block-git-no-verify.js",
+    "cf:test": "bun scripts/cloudflare.ts test",
+    "cf:demo": "bun scripts/cloudflare.ts demo",
+    "prepack": "bun run build",
     "check": "bun run typecheck && bun run lint",
     "deploy": "bun run build && wrangler deploy",
     "dev": "vite build && wrangler dev",
-    "podaj": "bun scripts/podaj.mjs",
-    "keygen": "bun scripts/podaj.mjs keygen",
-    "decrypt": "bun scripts/podaj.mjs decrypt",
+    "podaj": "bun scripts/podaj.ts",
+    "keygen": "bun scripts/podaj.ts keygen",
+    "decrypt": "bun scripts/podaj.ts decrypt",
     "lint": "oxlint -c oxlint.config.ts",
-    "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && lefthook install || true",
-    "test": "vitest run",
+    "prepare": "[ ! -f scripts/prepare.ts ] || bun scripts/prepare.ts",
+    "test": "bun run build && vitest run",
     "typecheck": "tsrs --noEmit -p tsconfig.json && tsrs --noEmit -p tsconfig.scripts.json",
     "typecheck:scripts": "tsrs --noEmit -p tsconfig.scripts.json"
   },
@@ -44,10 +47,11 @@
     "@types/node": "24.19.2",
     "@types/ws": "^8.18.2",
     "@yielded/effect-tsrs": "0.2.3",
+    "esbuild": "0.25.4",
     "lefthook": "2.2.2",
+    "miniflare": "4.20251011.1",
     "oxlint": "1.91.0",
     "oxlint-tsgolint": "7.0.2005",
-    "partysocket": "^1.3.0",
     "tsrs": "0.21.0-ts7.1.0-beta",
     "typescript": "7.0.2",
     "ultracite": "8.1.1",
@@ -60,7 +64,7 @@
     "@fontsource/commit-mono": "^5.3.0",
     "effect": "4.1.2",
     "foldkit": "0.170.0",
-    "partyserver": "^0.5.10",
+    "jsonc-parser": "3.3.1",
     "pixelarticons": "2.4.2",
     "wrangler": "4.45.0",
     "ws": "^8.22.1"

@@ -25,8 +25,4 @@ jobs:
             echo "Set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID to deploy."
             exit 0
           fi
-          if [ ! -f public/recipient.pem ]; then
-            echo "Add public/recipient.pem (recipient public key) and push again."
-            exit 1
-          fi
           bun run deploy

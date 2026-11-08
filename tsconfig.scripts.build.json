@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.scripts.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "noEmitOnError": true,
+    "rootDir": ".",
+    "outDir": "dist"
+  }
+}

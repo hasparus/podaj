@@ -1,13 +1,13 @@
-# podaj feature map
+# Feature map
 
-User-facing features of the podaj SPA, each driven through `scripts/journey.sh` or by hand with agent-browser (see `../SKILL.md` Drive). A proof that touches one feature isn't a proof for the others.
+Canonical path: terminal `wait` → human fills CLI URL → terminal JSON. Source anchors are repository-relative; these documents are relative to this skill.
 
-| Feature | File | Entry point | Journey |
-| --- | --- | --- | --- |
-| Create a one-shot link | [create-link.md](create-link.md) | `/` | `journey.sh "$ENV_FILE" create-link` |
-| Open a handoff with a key file | [receive-handoff.md](receive-handoff.md) | `/h/<id>` | `journey.sh "$ENV_FILE" receive-handoff` |
-| Link is gone after one open | [one-shot-gone.md](one-shot-gone.md) | `/h/<id>` again, `GET /api/handoffs/<id>` | `journey.sh "$ENV_FILE" one-shot-gone` |
+| Feature | Manual proof | Automated/source anchors |
+| --- | --- | --- |
+| [CLI request](cli-request.md) | Compiled CLI emits a complete fill URL; no persisted keypair | `scripts/podaj.ts`, `scripts/instance.ts`, `test/cli-lifecycle.test.ts` |
+| [Human fill](human-fill.md) | Only explicit **send** uploads; success clears values | `src/client/app.ts`, `src/client/parse-route.ts`, `test/client-app.test.ts` |
+| [Terminal consume](terminal-consume.md) | Exact JSON on stdout; terminal exits successfully | `scripts/wait-ready.ts`, `src/handoffs/party.ts`, `test/worker-runtime.test.ts` |
 
-`receive-handoff` and `one-shot-gone` consume the URL that `create-link` wrote to `$EVIDENCE/handoff-url.txt`. Run them in that order, or run `all`.
+The landing page only directs users to the CLI. There is no browser-created link, browser receiver, private-key picker, or destructive GET workflow. Storage is a SQLite-backed Durable Object. Subscriptions authenticate with per-handoff capabilities.
 
-Not mapped yet: the CLI (`podaj init`, including `--url` with `PODAJ_TOKEN` on stdin and `--deploy`; `podaj wait KEY`; `podaj decrypt` with `PODAJ_KEY_DIR=<dir>` reading a `PODAJ1.` blob on stdin) and the error copy in `src/client/user-facing.ts`, such as "Add a key and value." and "That key file didn't open this handoff.".
+Demo enrollment is a separate `/authorize#challenge=…&recipient=…` page before reservation, not the secret-entry page. Keep localhost private-mode manual proof separate from automated demo authorization/siteverify fixtures; do not contact Turnstile or configure real demo credentials for this journey.
