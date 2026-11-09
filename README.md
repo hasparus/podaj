@@ -14,7 +14,7 @@ Requires Node.js 22+. Uses the public demo at `https://podaj.fyi` by default—n
 
 [CI](https://github.com/hasparus/podaj/actions/workflows/ci.yml) publishes to npm when a `v*` version tag is pushed. [Cloudflare deployment](https://github.com/hasparus/podaj/actions/workflows/deploy.yml) runs independently on `main` pushes, version tags, and manual reruns.
 
-## Self-hosting (optional)
+## Self-hosting
 
 ```sh
 podaj deploy
