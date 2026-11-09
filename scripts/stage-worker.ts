@@ -10,7 +10,7 @@ type WorkerConfig = Record<string, unknown> & {
   assets: Record<string, unknown> & { directory: string };
 };
 
-const workerConfig = (root: string): WorkerConfig => {
+export const workerConfig = (root: string): WorkerConfig => {
   const errors: ParseError[] = [];
   const value: unknown = parse(readFileSync(join(root, "wrangler.jsonc"), "utf8"), errors, { allowTrailingComma: true });
   if (errors.length > 0 || typeof value !== "object" || value === null || Array.isArray(value) ||

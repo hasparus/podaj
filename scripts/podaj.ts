@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import type { InitArgs } from "./init-args.js";
+import type { ConfigArgs } from "./config-args.js";
+import type { SetupIo } from "./setup-flow.js";
 import type { Reservation } from "../src/handoffs/protocol.js";
 import {
   cancel,
@@ -22,11 +23,12 @@ import { decryptHandoff } from "./decrypt-handoff.js";
 import {
   defaultConfigPath,
   readConfig,
+  resolveConnection,
   writeConfig,
 } from "./config.js";
-import { composeUrl, workersUrl } from "./deploy-text.js";
-import { initArgs } from "./init-args.js";
-import { runInit } from "./init-flow.js";
+import { composeUrl } from "./deploy-text.js";
+import { configArgs } from "./config-args.js";
+import { runConfig, runDeploy } from "./setup-flow.js";
 import { authHeaders, authorizeDemo, instanceConfig, originOf, probeInstance, recipientIdentity } from "./instance.js";
 import { keyDir } from "./keygen.js";
 import { generateKeypair } from "./keypair.js";
@@ -35,21 +37,23 @@ import { selectVars } from "./select-vars.js";
 import { readStdinToken } from "./stdin-token.js";
 import { clientBuilt, stageWorker, workerStageDir } from "./stage-worker.js";
 import { waitReady } from "./wait-ready.js";
+import { createWrangler } from "./wrangler.js";
 
 const repoRoot = packageRoot(import.meta.url);
 const KEY_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 
 const usage = () => {
   console.error(`usage:
-  podaj init
-  podaj init --url https://<name>.workers.dev   # private: PODAJ_API_AUTH_SECRET on stdin
-  podaj init --deploy
   podaj wait [KEY ...]
+  podaj deploy
+  podaj config
+  podaj config --url https://<name>.workers.dev   # private: PODAJ_API_AUTH_SECRET on stdin
   podaj keygen
   podaj decrypt [PODAJ1.blob]
 
-init   connect to a worker you already deployed, or deploy one after Cloudflare login
-wait   reserve a fill link, block until those keys are pasted, print them as JSON`);
+wait    request variables using podaj.fyi by default; print the result as JSON
+deploy  deploy your own worker and save its connection automatically
+config  connect to an existing worker without deploying`);
   process.exit(2);
 };
 
@@ -62,41 +66,30 @@ const answered = async (answer: Promise<string | symbol>): Promise<string> => {
   return value;
 };
 
-const capture = (bin: string, args: string[], opts: { input?: string; redact?: string } = {}) => {
-  const result = spawnSync(process.execPath, [bin, ...args], {
+const buildClient = () => {
+  const result = spawnSync(process.execPath, [packageTool("vite"), "build"], {
     cwd: repoRoot,
     encoding: "utf8",
-    input: opts.input,
-    stdio: ["pipe", "pipe", "pipe"],
+    stdio: ["ignore", 2, 2],
   });
-  const raw = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-  const output = opts.redact ? raw.replaceAll(opts.redact, "[redacted]") : raw;
-  process.stderr.write(output);
   if (result.error !== undefined) {
     throw result.error;
   }
   if (result.status !== 0) {
-    throw new Error(`${args.join(" ")} failed`);
+    throw new Error("Vite build failed");
   }
-  return output;
 };
 
 const runtimeConfig = () => {
-  const file = readConfig(defaultConfigPath());
-  const url = (process.env.PODAJ_URL ?? file?.url ?? "").replace(/\/$/u, "");
-  const savedToken = file !== null && originOf(file.url) === originOf(url) ? file.token : "";
-  const token = readStdinToken() ?? process.env.PODAJ_API_AUTH_SECRET ?? savedToken;
-  if (url.length === 0) {
-    throw new Error("no podaj url — run podaj init");
-  }
-  return { token, url: originOf(url) };
+  const config = resolveConnection(process.env, readConfig(defaultConfigPath()));
+  return { ...config, token: readStdinToken() ?? config.token };
 };
 
 const fail: (message: string) => never = (message) => {
   throw new Error(message);
 };
 
-const tokenOnStdin = (args: InitArgs) => {
+const tokenOnStdin = (args: ConfigArgs) => {
   if (!args.tokenStdin && (args.url === undefined || args.token !== undefined)) {
     return args;
   }
@@ -107,15 +100,21 @@ const tokenOnStdin = (args: InitArgs) => {
   return { ...args, ...(token === undefined ? {} : { token }), tokenStdin: false };
 };
 
-const init = async (argv: string[]) => {
-  const args = tokenOnStdin(initArgs(argv));
+const setup = async (command: "config" | "deploy", argv: string[]) => {
+  if (command === "deploy" && argv.length > 0) {
+    throw new Error("podaj deploy does not accept arguments");
+  }
+  const args: ConfigArgs = command === "config" ? tokenOnStdin(configArgs(argv)) : { tokenStdin: false };
   const tty = process.stdin.isTTY === true && process.stdout.isTTY === true;
-  const interactive = tty && !args.deploy && args.url === undefined;
+  const interactive = tty && args.url === undefined;
   if (interactive) {
     intro("podaj");
   }
-  const wrangler = packageTool("wrangler");
-  await runInit(args, {
+  const wrangler = createWrangler({
+    bin: packageTool("wrangler"),
+    workspace: join(homedir(), ".local", "share", "podaj", "wrangler"),
+  });
+  const io = {
     askToken: () =>
       answered(
         password({
@@ -175,27 +174,7 @@ const init = async (argv: string[]) => {
           message: "Worker name",
         }),
       ),
-    chooseMode: async () => {
-      const mode = await answered(
-        select({
-          message: "Where is your podaj?",
-          options: [
-            {
-              hint: "Deploy to Cloudflare button in the README",
-              label: "I already deployed one",
-              value: "connect",
-            },
-            { label: "Deploy a new worker", value: "deploy" },
-          ],
-        }),
-      );
-      if (mode !== "connect" && mode !== "deploy") {
-        throw new Error(`unexpected choice ${mode}`);
-      }
-      return mode;
-    },
-    deploy: (configPath) =>
-      capture(wrangler, ["deploy", "--config", configPath]),
+    deploy: wrangler.deploy,
     ensureClient: () => {
       if (clientBuilt(repoRoot)) {
         return;
@@ -205,34 +184,17 @@ const init = async (argv: string[]) => {
           "client build is missing. Reinstall podaj so dist/client ships with the package.",
         );
       }
-      capture(packageTool("vite"), ["build"]);
+      buildClient();
     },
     isTTY: tty,
-    login: () => {
-      const child = spawnSync(process.execPath, [wrangler, "login"], { stdio: "inherit" });
-      if (child.error !== undefined) {
-        throw child.error;
-      }
-      if (child.status !== 0) {
-        throw new Error("Cloudflare login failed");
-      }
-    },
+    login: wrangler.login,
     mintToken: () => randomBytes(32).toString("hex"),
     note: (message) => {
       log.info(message);
     },
     config: instanceConfig,
     probe: probeInstance,
-    putSecret: (target, token) => {
-      const secretArgs = ["secret", "put", "PODAJ_API_AUTH_SECRET"];
-      if (target.configPath !== undefined) {
-        secretArgs.push("--config", target.configPath);
-      }
-      if (target.name !== undefined) {
-        secretArgs.push("--name", target.name);
-      }
-      capture(wrangler, secretArgs, { input: `${token}\n`, redact: token });
-    },
+    putSecret: wrangler.putSecret,
     save: (config) => {
       const file = defaultConfigPath();
       writeConfig(file, {
@@ -243,7 +205,7 @@ const init = async (argv: string[]) => {
         outro(config.url);
       }
       process.stdout.write(
-        `${JSON.stringify({ config: file, mode: config.mode, url: config.url }, null, 2)}\n`,
+        `${JSON.stringify({ config: file, url: config.url }, null, 2)}\n`,
       );
     },
     stage: () =>
@@ -251,10 +213,10 @@ const init = async (argv: string[]) => {
         packageRoot: repoRoot,
         stage: workerStageDir(homedir()),
       }),
-    whoami: () =>
-      spawnSync(process.execPath, [wrangler, "whoami"], { encoding: "utf8" }).status === 0,
-    workersUrl,
-  });
+    whoami: wrangler.whoami,
+  } satisfies SetupIo;
+  if (command === "deploy") await runDeploy(io);
+  else await runConfig(args, io);
 };
 
 const wait = async (keys: string[]) => {
@@ -271,7 +233,7 @@ const wait = async (keys: string[]) => {
   });
   const { fingerprint } = recipientIdentity(publicPem);
   const config = await instanceConfig(url);
-  const creationToken = config.mode === "demo"
+  const creationToken = config.access === "public"
     ? await authorizeDemo(url, publicPem, (message) => process.stderr.write(`${message}\n`))
     : token;
   const response = await fetch(new URL("/api/handoffs/reserve", url), {
@@ -344,8 +306,9 @@ const [command, ...rest] = process.argv.slice(2);
 
 try {
   switch (command) {
-    case "init":
-      await init(rest);
+    case "config":
+    case "deploy":
+      await setup(command, rest);
       break;
     case "wait":
       await wait(rest);

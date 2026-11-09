@@ -5,43 +5,38 @@ import { accessFor } from "../access.js";
 import type { Env } from "../env.js";
 import type { HandoffParty } from "./party.js";
 import { handoffTtlSeconds, maxHandoffBytes, sameOrigin } from "../security.js";
+import { handoffAccess } from "./access.js";
 import { bearerCapability, digest } from "./capabilities.js";
 import { HandoffsApiError } from "./errors.js";
 import { jsonResponse } from "./http.js";
-import { HANDOFF_ID, HANDOFF_SERVICE_NAME, type ClientConfig, type HandoffMode } from "./protocol.js";
+import { HANDOFF_ID, HANDOFF_SERVICE_NAME, type ClientConfig } from "./protocol.js";
 
 type RequestBindingsId = { readonly requestBindings: unique symbol };
 export const RequestBindings = Context.Service<RequestBindingsId, Env>("podaj/RequestBindings");
 
-export const handoffMode = (env: Env): HandoffMode => {
-  const mode = env.PODAJ_MODE ?? "private";
-  if (mode !== "private" && mode !== "demo") {
-    throw new HandoffsApiError({ status: 503, code: "invalid mode" });
-  }
-  return mode;
-};
+export { handoffAccess } from "./access.js";
 
 /** Existing capabilities remain usable when new public admission is unavailable. */
 export const handoffLimits = (env: Env) => {
-  const demo = handoffMode(env) === "demo";
+  const isPublic = handoffAccess(env) === "public";
   return {
-    handoffTtlSeconds: Math.min(handoffTtlSeconds(env.HANDOFF_TTL_SECONDS), demo ? 7200 : 86400),
-    maxHandoffBytes: Math.min(maxHandoffBytes(env.MAX_HANDOFF_BYTES), demo ? 32768 : Number.MAX_SAFE_INTEGER),
+    handoffTtlSeconds: Math.min(handoffTtlSeconds(env.HANDOFF_TTL_SECONDS), isPublic ? 7200 : 86400),
+    maxHandoffBytes: Math.min(maxHandoffBytes(env.MAX_HANDOFF_BYTES), isPublic ? 32768 : Number.MAX_SAFE_INTEGER),
   };
 };
 
 export const clientConfig = (env: Env): ClientConfig => {
-  const mode = handoffMode(env);
+  const access = handoffAccess(env);
   return {
-    mode,
+    access,
     ...handoffLimits(env),
-    ...(mode === "demo" ? { turnstileSiteKey: env.TURNSTILE_SITE_KEY } : {}),
+    ...(access === "public" ? { turnstileSiteKey: env.TURNSTILE_SITE_KEY } : {}),
   };
 };
 
 export const admissionConfig = (env: Env): ClientConfig => {
   const config = clientConfig(env);
-  if (config.mode === "demo" && ((env.TURNSTILE_SITE_KEY ?? "").length === 0 || (env.TURNSTILE_SECRET_KEY ?? "").length === 0 || env.PUBLIC_API_LIMITER === undefined)) {
+  if (config.access === "public" && ((env.TURNSTILE_SITE_KEY ?? "").length === 0 || (env.TURNSTILE_SECRET_KEY ?? "").length === 0 || env.PUBLIC_API_LIMITER === undefined)) {
     throw new HandoffsApiError({ status: 503, code: "verification unavailable" });
   }
   return config;
@@ -83,9 +78,9 @@ export const enforceApiPolicy = async (request: Request, env: Env): Promise<void
   if (accessFor(request, env.PODAJ_API_AUTH_SECRET) === "closed") {
     throw new HandoffsApiError({ status: 404, code: "not found" });
   }
-  const mode = handoffMode(env);
+  const access = handoffAccess(env);
   if (!sameOrigin(request)) throw new HandoffsApiError({ status: 403, code: "origin not allowed" });
-  if (mode === "demo") await enforcePublicRateLimit(request, env);
+  if (access === "public") await enforcePublicRateLimit(request, env);
   if (request.method === "HEAD" || new URL(request.url).pathname.includes("%")) {
     throw new HandoffsApiError({ status: 404, code: "not found" });
   }
@@ -106,7 +101,7 @@ type CreationGrant = { config: ClientConfig; creatorHash: string | null };
 
 export const authorizeCreation = async (request: Request, env: Env): Promise<CreationGrant> => {
   const config = admissionConfig(env);
-  if (config.mode === "private") {
+  if (config.access === "private") {
     requireOwner(request, env);
     return { config, creatorHash: null };
   }

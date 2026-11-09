@@ -20,6 +20,7 @@ const pair = generateKeyPairSync("rsa", {
 let runtime: Miniflare;
 let privateRuntime: Miniflare;
 let demoRuntime: Miniflare;
+let invalidAccessRuntime: Miniflare;
 let sealed: string;
 const DEMO_OWNER = "f".repeat(64);
 let verification: Record<string, unknown> = {};
@@ -47,11 +48,11 @@ beforeAll(async () => {
     entryPoints: [resolve("test/helpers/runtime-worker.ts")], bundle: true, write: false,
     format: "esm", platform: "browser", target: "es2022", external: ["cloudflare:workers"],
   });
-  const create = (demo: boolean) => new Miniflare({
+  const create = (demo: boolean, access = demo ? "public" : "private") => new Miniflare({
     modules: true, script: compiled.outputFiles[0].text, compatibilityDate: "2025-10-11",
     durableObjects: { HANDOFF_PARTY: { className: "InspectableHandoffParty", useSQLite: true } },
     bindings: {
-      PODAJ_MODE: demo ? "demo" : "private", PODAJ_API_AUTH_SECRET: demo ? DEMO_OWNER : OWNER, MAX_HANDOFF_BYTES: "32768",
+      PODAJ_ACCESS: access, PODAJ_API_AUTH_SECRET: demo ? DEMO_OWNER : OWNER, MAX_HANDOFF_BYTES: "32768",
       ...(demo ? { TURNSTILE_SITE_KEY: "synthetic-site-key", TURNSTILE_SECRET_KEY: "synthetic-siteverify-secret" } : {}),
     },
     ratelimits: demo ? { PUBLIC_API_LIMITER: { simple: { limit: 60, period: 60 } } } : {},
@@ -65,14 +66,38 @@ beforeAll(async () => {
   });
   privateRuntime = create(false);
   demoRuntime = create(true);
+  invalidAccessRuntime = create(false, "demo");
   runtime = privateRuntime;
-  await Promise.all([privateRuntime.ready, demoRuntime.ready]);
+  await Promise.all([privateRuntime.ready, demoRuntime.ready, invalidAccessRuntime.ready]);
   sealed = await seal({ vars: [{ key: PRIVATE_NAME, value: PRIVATE_VALUE }] }, pair.publicKey);
 }, 30_000);
 beforeEach(async () => { runtime = privateRuntime; verificationCalls = 0; await send("/__test/reset"); });
-afterAll(async () => { await Promise.all([privateRuntime?.dispose(), demoRuntime?.dispose()]); });
+afterAll(async () => { await Promise.all([privateRuntime?.dispose(), demoRuntime?.dispose(), invalidAccessRuntime?.dispose()]); });
 
 describe("actual Workers HTTP/RPC/SQLite runtime", () => {
+  it.each(["private", "public"] as const)("publishes the %s access contract without the removed field", async (access) => {
+    runtime = access === "public" ? demoRuntime : privateRuntime;
+    const config = await send("/api/config");
+    expect(config.status).toBe(200);
+    expect(await config.json()).toEqual({
+      access, handoffTtlSeconds: 7200, maxHandoffBytes: 32768,
+      ...(access === "public" ? { turnstileSiteKey: "synthetic-site-key" } : {}),
+    });
+    const response = await send("/api/access", access === "private" ? OWNER : undefined);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ access, authorized: true });
+  });
+
+  it("fails closed for the removed access value on HTTP and WebSocket routing", async () => {
+    runtime = invalidAccessRuntime;
+    for (const path of ["/api/config", "/api/access", "/api/demo/status", `/parties/handoff-party/${"a".repeat(32)}`]) {
+      const response = await send(path, OWNER);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: "invalid access" });
+    }
+    expect(verificationCalls).toBe(0);
+  });
+
   it("encrypts both names and values, stores only ciphertext and hashes, then atomically removes ciphertext", async () => {
     const slot = await reserve();
     const pending = await snapshot();

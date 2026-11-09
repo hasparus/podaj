@@ -24,7 +24,7 @@ export const malformedServer = async (malformation: Malformation) => {
       response.end(JSON.stringify(value));
     };
     if (path === "/api/config") {
-      send(200, { mode: malformation === "approval-fingerprint" ? "demo" : "private", handoffTtlSeconds: 7200, maxHandoffBytes: 32768 });
+      send(200, { access: malformation === "approval-fingerprint" ? "public" : "private", handoffTtlSeconds: 7200, maxHandoffBytes: 32768 });
     } else if (path === "/api/demo/status") {
       send(200, { status: "approved", expiresAt: Date.now() + 60_000, recipientFingerprint: "f".repeat(64) });
     } else if (path === "/api/handoffs/reserve") {

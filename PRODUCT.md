@@ -22,7 +22,8 @@
 
 - CLI: initiate requests and decrypt replies locally.
 - Browser: fill a CLI-created request. No browser recipient wizard or private-key picker.
-- Shared hosted demo and self-hosting through the Deploy to Cloudflare button use the same protocol.
+- `npm i -g podaj`, then `podaj wait KEY...`, uses the hosted demo at `https://podaj.fyi` without setup. Optional `podaj deploy` deploys and saves the connection automatically; `podaj config` connects an existing Worker, including button deployments. Consumers need Node.js 22+, not Bun or a checkout.
+- Shared hosted demo and self-hosting through the Deploy to Cloudflare button use the same protocol. Workers use `PODAJ_ACCESS=private|public`; private is the deployment default, public uses Turnstile admission.
 
 ## Boundaries
 

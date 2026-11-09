@@ -4,6 +4,15 @@ import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writ
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { originOf } from "./instance.js";
+
+export const DEFAULT_URL = "https://podaj.fyi";
+
+export const resolveConnection = (env: NodeJS.ProcessEnv, saved: PodajConfig | null): PodajConfig => {
+  const url = originOf(env.PODAJ_URL ?? saved?.url ?? DEFAULT_URL);
+  const savedToken = saved !== null && originOf(saved.url) === url ? saved.token : "";
+  return { url, token: env.PODAJ_API_AUTH_SECRET ?? savedToken };
+};
 
 export const configPath = (env: NodeJS.ProcessEnv, home: string) => {
   const base = env.XDG_CONFIG_HOME ?? join(home, ".config");

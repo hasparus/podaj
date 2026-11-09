@@ -32,12 +32,12 @@ export const getConfig = (env: Env) => clientConfig(env);
 
 export const getAccess = (request: Request, env: Env) => {
   const config = clientConfig(env);
-  if (config.mode === "private") requireOwner(request, env);
-  return { mode: config.mode, authorized: true as const };
+  if (config.access === "private") requireOwner(request, env);
+  return { access: config.access, authorized: true as const };
 };
 
 const requireDemo = (env: Env): void => {
-  if (clientConfig(env).mode !== "demo") throw new HandoffsApiError({ status: 404, code: "not found" });
+  if (clientConfig(env).access !== "public") throw new HandoffsApiError({ status: 404, code: "not found" });
 };
 
 export const getDemoStatus = async (request: Request, env: Env) => {

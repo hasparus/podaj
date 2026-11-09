@@ -82,12 +82,63 @@ describe("declarative HTTP routing", () => {
     expectTypeOf<Extract<CredentialStatusReply, { status: 202 }>["body"]>().toEqualTypeOf<typeof CredentialPending.Type>();
   });
 
+  it.each([undefined, "private", "public"] as const)("exposes only the access contract for %s", async (access) => {
+    const { request } = setup({ PODAJ_ACCESS: access, MAX_HANDOFF_BYTES: "40000", HANDOFF_TTL_SECONDS: "86400", TURNSTILE_SITE_KEY: "site" });
+    const expected = access ?? "private";
+    expect(await (await request("/api/config")).json()).toEqual({
+      access: expected,
+      maxHandoffBytes: expected === "public" ? 32768 : 40000,
+      handoffTtlSeconds: expected === "public" ? 7200 : 86400,
+      ...(expected === "public" ? { turnstileSiteKey: "site" } : {}),
+    });
+    const anonymous = await request("/api/access");
+    expect(anonymous.status).toBe(expected === "public" ? 200 : 401);
+    const owner = await request("/api/access", { headers: { Authorization: "Bearer owner" } });
+    expect(owner.status).toBe(200);
+    expect(await owner.json()).toEqual({ access: expected, authorized: true });
+  });
+
+  it("ignores the removed binding instead of enabling public access", async () => {
+    const { request, namespace } = setup(Object.assign({ TURNSTILE_SITE_KEY: "site" }, { PODAJ_MODE: "demo" }));
+    expect(await (await request("/api/config")).json()).toEqual({
+      access: "private", maxHandoffBytes: 32768, handoffTtlSeconds: 7200,
+    });
+    expect((await request("/api/access")).status).toBe(401);
+    expect((await request("/api/handoffs/reserve", { method: "POST", body: "not-json" })).status).toBe(401);
+    expect((await request("/api/demo/status", { headers: bearer })).status).toBe(404);
+    expect((await request("/api/demo/approve", { method: "POST" })).status).toBe(404);
+    expect(namespace.get).not.toHaveBeenCalled();
+  });
+
+  it.each(["demo", "", "PUBLIC", "unknown", " private", null, 1])("fails closed for invalid access %j before parsing bodies or calling the DO", async (access) => {
+    const limit = vi.fn(async () => ({ success: true }));
+    const { request, namespace } = setup({
+      PODAJ_ACCESS: access as string, PUBLIC_API_LIMITER: { limit },
+    });
+    for (const [path, method] of [
+      ["/api/config", "GET"], ["/api/access", "GET"], ["/api/demo/status", "GET"],
+      ["/api/demo/approve", "POST"], ["/api/handoffs/reserve", "POST"],
+      [`/api/handoffs/${id}`, "PUT"], [`/api/handoffs/${id}/status`, "GET"],
+      [`/api/handoffs/${id}/consume`, "POST"],
+    ]) {
+      const body = untouchedBody();
+      const response = await request(path, {
+        method, headers: json, ...(method === "GET" ? {} : { body: body.body, duplex: "half" }),
+      } as RequestInit);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: "invalid access" });
+      expect(body.pull).not.toHaveBeenCalled();
+    }
+    expect(namespace.get).not.toHaveBeenCalled();
+    expect(limit).not.toHaveBeenCalled();
+  });
+
   it("provides isolated bindings to concurrent requests", async () => {
     const first = setup({ MAX_HANDOFF_BYTES: "2048" });
     const second = setup({ MAX_HANDOFF_BYTES: "4096" });
     const responses = await Promise.all([first.request("/api/config"), second.request("/api/config")]);
-    expect(await responses[0].json()).toMatchObject({ mode: "private", maxHandoffBytes: 2048 });
-    expect(await responses[1].json()).toMatchObject({ mode: "private", maxHandoffBytes: 4096 });
+    expect(await responses[0].json()).toMatchObject({ access: "private", maxHandoffBytes: 2048 });
+    expect(await responses[1].json()).toMatchObject({ access: "private", maxHandoffBytes: 4096 });
   });
 
   it.each([
@@ -206,9 +257,9 @@ describe("declarative HTTP routing", () => {
   it.each(["unknown", "expired"] as const)("rejects %s demo credentials before touching the body", async (state) => {
     const { storage, database } = sqliteStorage();
     let now = Date.UTC(2026, 10, 1);
-    const store = new HandoffStore(storage, { PODAJ_MODE: "demo" }, () => now);
+    const store = new HandoffStore(storage, { PODAJ_ACCESS: "public" }, () => now);
     const { request, service } = setup({
-      PODAJ_MODE: "demo", TURNSTILE_SITE_KEY: "site", TURNSTILE_SECRET_KEY: "secret",
+      PODAJ_ACCESS: "public", TURNSTILE_SITE_KEY: "site", TURNSTILE_SECRET_KEY: "secret",
       PUBLIC_API_LIMITER: { limit: async () => ({ success: true }) },
     });
     service.credentialStatus.mockImplementation(async (hash) => store.credentialStatus(hash));
@@ -233,9 +284,9 @@ describe("declarative HTTP routing", () => {
 
   it("allows approved demo creation and still revalidates recipient binding at reservation", async () => {
     const { storage, database } = sqliteStorage();
-    const store = new HandoffStore(storage, { PODAJ_MODE: "demo" });
+    const store = new HandoffStore(storage, { PODAJ_ACCESS: "public" });
     const { request, service } = setup({
-      PODAJ_MODE: "demo", TURNSTILE_SITE_KEY: "site", TURNSTILE_SECRET_KEY: "secret",
+      PODAJ_ACCESS: "public", TURNSTILE_SITE_KEY: "site", TURNSTILE_SECRET_KEY: "secret",
       PUBLIC_API_LIMITER: { limit: async () => ({ success: true }) },
     });
     service.credentialStatus.mockImplementation(async (hash) => store.credentialStatus(hash));
@@ -264,7 +315,7 @@ describe("declarative HTTP routing", () => {
     });
     expect(response.status).toBe(403);
     const limited = setup({
-      PODAJ_MODE: "demo", PUBLIC_API_LIMITER: { limit: async () => ({ success: false }) },
+      PODAJ_ACCESS: "public", PUBLIC_API_LIMITER: { limit: async () => ({ success: false }) },
     });
     const blocked = await limited.request(`/api/handoffs/${id}`, {
       method: "PUT", headers: { ...json, "CF-Connecting-IP": "192.0.2.1" }, body: "invalid",
@@ -302,10 +353,10 @@ describe("declarative HTTP routing", () => {
   });
 
   it("delivers existing capabilities without public-admission configuration", async () => {
-    const { request, service, namespace } = setup({ PODAJ_MODE: "demo" });
+    const { request, service, namespace } = setup({ PODAJ_ACCESS: "public" });
     const config = await request("/api/config");
     expect(config.status).toBe(200);
-    expect(await config.json()).toMatchObject({ mode: "demo", maxHandoffBytes: 32768 });
+    expect(await config.json()).toMatchObject({ access: "public", maxHandoffBytes: 32768 });
     expect((await request("/api/handoffs/reserve", { method: "POST", headers: json, body: "not-json" })).status).toBe(503);
     expect((await request("/api/demo/approve", { method: "POST", body: "not-json" })).status).toBe(503);
     const filled = await request(`/api/handoffs/${id}`, {
@@ -344,7 +395,7 @@ describe("declarative HTTP routing", () => {
   });
 
   it("binds Turnstile proof to both the challenge and recipient fingerprint", async () => {
-    const { request, service } = setup({ PODAJ_MODE: "demo", TURNSTILE_SITE_KEY: "site", TURNSTILE_SECRET_KEY: "secret", PUBLIC_API_LIMITER: { limit: async () => ({ success: true }) } });
+    const { request, service } = setup({ PODAJ_ACCESS: "public", TURNSTILE_SITE_KEY: "site", TURNSTILE_SECRET_KEY: "secret", PUBLIC_API_LIMITER: { limit: async () => ({ success: true }) } });
     const recipientPublicKey = await recipientKey();
     const keyFingerprint = await recipientFingerprint(recipientPublicKey);
     const challenge = "d".repeat(64);
@@ -371,7 +422,7 @@ describe("declarative HTTP routing", () => {
   });
 
   it("rejects malformed approval successes at the HttpApi response boundary", async () => {
-    const { request, service } = setup({ PODAJ_MODE: "demo", TURNSTILE_SITE_KEY: "site", TURNSTILE_SECRET_KEY: "secret", PUBLIC_API_LIMITER: { limit: async () => ({ success: true }) } });
+    const { request, service } = setup({ PODAJ_ACCESS: "public", TURNSTILE_SITE_KEY: "site", TURNSTILE_SECRET_KEY: "secret", PUBLIC_API_LIMITER: { limit: async () => ({ success: true }) } });
     const recipientPublicKey = await recipientKey();
     const challenge = "d".repeat(64);
     const cdata = await digest(`${challenge}.${await recipientFingerprint(recipientPublicKey)}`);
@@ -448,7 +499,7 @@ describe("declarative HTTP routing", () => {
     { status: 200, body: { status: "approved", expiresAt } },
     { status: 202, body: { status: "pending", recipientFingerprint: fingerprint } },
   ])("rejects malformed credential successes at the HttpApi response boundary: %j", async (result) => {
-    const { request, service } = setup({ PODAJ_MODE: "demo" });
+    const { request, service } = setup({ PODAJ_ACCESS: "public" });
     service.credentialStatus.mockResolvedValueOnce(result as unknown as CredentialStatusReply);
     const response = await request("/api/demo/status", { headers: bearer });
     expect(response.status).toBe(503);
@@ -456,7 +507,7 @@ describe("declarative HTTP routing", () => {
   });
 
   it("keeps demo status and private-only approval handshakes exact", async () => {
-    const demo = setup({ PODAJ_MODE: "demo", TURNSTILE_SITE_KEY: "site", TURNSTILE_SECRET_KEY: "secret", PUBLIC_API_LIMITER: { limit: async () => ({ success: true }) } });
+    const demo = setup({ PODAJ_ACCESS: "public", TURNSTILE_SITE_KEY: "site", TURNSTILE_SECRET_KEY: "secret", PUBLIC_API_LIMITER: { limit: async () => ({ success: true }) } });
     const pending = await demo.request("/api/demo/status", { headers: { ...bearer, "CF-Connecting-IP": "192.0.2.1" } });
     expect(pending.status).toBe(202);
     expect(await pending.json()).toEqual({ status: "pending" });

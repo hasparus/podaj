@@ -5,18 +5,36 @@
 
 One-shot environment-variable handoff: your CLI creates a link, a human fills it and clicks **send**, and the CLI receives JSON.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/hasparus/podaj)
-
-Deploy your Worker, set a random `PODAJ_API_AUTH_SECRET` as a Worker secret, then connect from a checkout with Bun 1.4.4:
-
 ```sh
-bun install
-bun run podaj init
-bun run podaj wait API_KEY
+npm i -g podaj
+podaj wait API_KEY
 ```
 
-Choose **connect**, or **deploy** if you prefer Wrangler. Keep the CLI running and share its printed fill link. No deployed public key is needed. The hosted demo and deploy-button path still need rollout verification; use test values for now.
+Requires Node.js 22+. Uses the public demo at `https://podaj.fyi` by default—no deployment or configuration needed. Approve the request in your browser, then share the fill link and keep the CLI running.
 
-**Security:** names and values are encrypted before upload. Each request's private key stays in the CLI's memory; fill links contain only write authority, never your owner token. Handoffs expire after 2 hours by default. Collection is atomic and at most once: a lost collection response needs a new request. Browser encryption still trusts the host's code.
+[CI](https://github.com/hasparus/podaj/actions/workflows/ci.yml) publishes to npm when a `v*` version tag is pushed. [Cloudflare deployment](https://github.com/hasparus/podaj/actions/workflows/deploy.yml) runs independently on `main` pushes, version tags, and manual reruns.
 
-Development: `bun run dev`, `bun run check`, `bun run test`.
+## Self-hosting (optional)
+
+```sh
+podaj deploy
+podaj wait API_KEY
+```
+
+`deploy` handles Cloudflare login, deploys your Worker, and saves its connection automatically. No Bun, checkout, or separate Wrangler installation is needed.
+
+Already deployed with the button? Run `podaj config` to connect instead:
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/hasparus/podaj)
+
+For non-interactive private connections, pass the Worker secret on stdin:
+
+```sh
+printf '%s\n' "$PODAJ_API_AUTH_SECRET" | podaj config --url https://<name>.workers.dev
+```
+
+Workers default to `PODAJ_ACCESS=private`, requiring `PODAJ_API_AUTH_SECRET`. `PODAJ_ACCESS=public` uses Turnstile approval and bounded admission; configure `TURNSTILE_SITE_KEY` and the `TURNSTILE_SECRET_KEY` Worker secret before enabling it. Run `podaj config --url https://podaj.fyi` to return to the demo.
+
+**Security:** names and values are encrypted before upload. Each request's private key stays in CLI memory; fill links never contain your instance token. Handoffs expire after 2 hours. Collection is atomic and at most once: a lost collection response needs a new request. Browser encryption still trusts the host's code.
+
+Development only (Bun 1.4.4): `bun install`, `bun run dev`, `bun run check`, `bun run test`.

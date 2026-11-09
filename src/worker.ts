@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import { accessFor } from "./access.js";
 import type { Env } from "./env.js";
-import { handleHandoffsApi, handoffMode, handoffService } from "./handoffs/handler.js";
+import { handleHandoffsApi, handoffAccess, handoffService } from "./handoffs/handler.js";
 import { jsonResponse } from "./handoffs/http.js";
 import { HandoffsApiError } from "./handoffs/errors.js";
 import { enforcePublicRateLimit } from "./handoffs/policy.js";
@@ -23,7 +23,7 @@ const websocket = async (request: Request, env: Env): Promise<Response> => {
   }
   if (!sameOrigin(request)) return jsonResponse({ error: "origin not allowed" }, 403);
   try {
-    if (handoffMode(env) === "demo") await enforcePublicRateLimit(request, env);
+    if (handoffAccess(env) === "public") await enforcePublicRateLimit(request, env);
     const response = await handoffService(env).fetch(request);
     return response.status === 101 ? response : secured(response);
   } catch (error) {

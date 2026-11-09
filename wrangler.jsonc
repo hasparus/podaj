@@ -31,7 +31,7 @@
     }
   ],
   "vars": {
-    "PODAJ_MODE": "private",
+    "PODAJ_ACCESS": "private",
     "MAX_HANDOFF_BYTES": "32768",
     "HANDOFF_TTL_SECONDS": "7200"
   }

@@ -6,9 +6,10 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
+import { buildSync } from "esbuild";
 
-import { configPath, readConfig, writeConfig } from "../scripts/config.js";
-import { composeUrl, workersUrl } from "../scripts/deploy-text.js";
+import { configPath, DEFAULT_URL, readConfig, resolveConnection, writeConfig } from "../scripts/config.js";
+import { composeUrl } from "../scripts/deploy-text.js";
 import { recipientIdentity } from "../scripts/instance.js";
 import { selectVars } from "../scripts/select-vars.js";
 import { packageRoot, packageTool } from "../scripts/package-paths.js";
@@ -26,6 +27,31 @@ describe("podaj config", () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+describe("connection selection", () => {
+  const saved = { url: "https://private.example.test", token: "synthetic-private-secret" };
+
+  it("defaults to the hosted demo without a saved connection", () => {
+    expect(DEFAULT_URL).toBe("https://podaj.fyi");
+    expect(resolveConnection({}, null)).toEqual({ url: DEFAULT_URL, token: "" });
+  });
+
+  it("prefers saved self-hosted configuration over the demo", () => {
+    expect(resolveConnection({}, saved)).toEqual(saved);
+  });
+
+  it("prefers an explicit URL without forwarding another origin's saved token", () => {
+    expect(resolveConnection({ PODAJ_URL: DEFAULT_URL }, saved)).toEqual({ url: DEFAULT_URL, token: "" });
+    expect(resolveConnection({ PODAJ_URL: `${saved.url}/` }, saved)).toEqual(saved);
+    expect(resolveConnection({ PODAJ_URL: DEFAULT_URL, PODAJ_API_AUTH_SECRET: "explicit-token" }, saved))
+      .toEqual({ url: DEFAULT_URL, token: "explicit-token" });
+  });
+
+  it("does not silently fall back to the demo for an invalid explicit URL", () => {
+    expect(() => resolveConnection({ PODAJ_URL: "" }, saved)).toThrow();
+    expect(() => resolveConnection({ PODAJ_URL: "http://remote.example.test" }, saved)).toThrow(/HTTPS/u);
   });
 });
 
@@ -84,11 +110,6 @@ describe("selectVars", () => {
 });
 
 describe("deploy text", () => {
-  it("reads the workers.dev url", () => {
-    expect(
-      workersUrl("Deployed podaj\n  https://podaj.me.workers.dev\n"),
-    ).toBe("https://podaj.me.workers.dev");
-  });
   it("puts only the write capability and own SPKI in the fill fragment", () => {
     const { publicKey } = generateKeyPairSync("rsa", {
       modulusLength: 2048,
@@ -114,6 +135,33 @@ const isolatedEnv = (home: string): NodeJS.ProcessEnv => ({
 });
 
 describe("compiled CLI distribution", () => {
+  it("waits on the public demo without setup, Bun, or a configured URL", () => {
+    const home = mkdtempSync(join(tmpdir(), "podaj-default-demo-"));
+    const calls = join(home, "requests.jsonl");
+    const preload = join(home, "default-host.mjs");
+    try {
+      buildSync({ entryPoints: [resolve("test/helpers/default-host.ts")], outfile: preload, platform: "node", format: "esm", target: "node22" });
+      let result: { status: number | null; stdout: string; stderr: string } | undefined;
+      try {
+        execFileSync(process.execPath, ["--import", preload, resolve("dist/scripts/podaj.js"), "wait", "API_KEY"], {
+          cwd: home, env: { HOME: home, XDG_CONFIG_HOME: join(home, "config"), PATH: "/nonexistent", PODAJ_TEST_DEFAULT_HOST_LOG: calls },
+          input: "", encoding: "utf8", stdio: "pipe", timeout: 10_000,
+        });
+      } catch (error) {
+        result = error as typeof result;
+      }
+      expect(result?.status).toBe(1);
+      expect(result?.stdout).toBe("");
+      expect(result?.stderr).toContain("authorize this request in your browser:\nhttps://podaj.fyi/authorize#");
+      expect(result?.stderr).toContain("authorization failed (503)");
+      expect(readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line))).toEqual([
+        { url: "https://podaj.fyi/api/config", authenticated: false },
+        { url: "https://podaj.fyi/api/demo/status", authenticated: true },
+      ]);
+      expect(existsSync(join(home, "config/podaj/config.json"))).toBe(false);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
   it("resolves source and compiled tools to the same package, independent of cwd", () => {
     const root = resolve(".");
     expect(packageRoot(pathToFileURL(join(root, "scripts/podaj.ts")).href)).toBe(root);
