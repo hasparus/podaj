@@ -10,7 +10,7 @@ npm i -g podaj
 podaj wait API_KEY
 ```
 
-Requires Node.js 22+. Uses the public demo at `https://podaj.fyi` by default—no deployment or configuration needed. Approve the request in your browser, then share the fill link and keep the CLI running.
+Requires Node.js 22+. Uses the public demo at `https://podaj.fyi` by default (no deployment or configuration needed). Approve the request in your browser, then share the fill link and keep the CLI running.
 
 ## Self-hosting
 
