@@ -3,11 +3,11 @@ name: deploy
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 
 jobs:
   deploy:
-    # Upstream stays a template. Clones deploy to their own Cloudflare account.
     if: github.repository != 'hasparus/podaj'
     runs-on: ubuntu-latest
     steps:
@@ -26,3 +26,47 @@ jobs:
             exit 0
           fi
           bun run deploy
+
+  demo:
+    if: github.repository == 'hasparus/podaj' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    concurrency:
+      group: podaj-demo-deployment
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - name: Preflight demo configuration and credentials
+        run: bun scripts/release.ts preflight-demo
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TURNSTILE_SECRET_KEY: ${{ secrets.TURNSTILE_SECRET_KEY }}
+          TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
+      - run: bun run check
+      - name: Full tests including build
+        run: bun run test
+      - name: Deploy demo then set runtime secret with pinned Wrangler under Node
+        run: bun scripts/release.ts deploy-demo
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TURNSTILE_SECRET_KEY: ${{ secrets.TURNSTILE_SECRET_KEY }}
+          TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
+      - name: Live public config, documents, security, assets and admission smoke
+        run: bun scripts/release.ts smoke-demo
+        env:
+          TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
+      - name: Record verification boundary
+        run: |
+          printf '%s\n' 'Live HTTP smoke checks do not verify real Turnstile or a human fill. No captcha bypass is enabled.' >> "$GITHUB_STEP_SUMMARY"

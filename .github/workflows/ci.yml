@@ -2,16 +2,80 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
       - run: bun run check
-      - run: bun run test
+      - name: Full tests including build
+        run: bun run test
+      - name: Pack the tested build once without lifecycle scripts
+        if: github.repository == 'hasparus/podaj' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: bun scripts/release.ts pack
+      - name: Upload tested installable package
+        if: github.repository == 'hasparus/podaj' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: podaj-tested-${{ github.sha }}
+          overwrite: true
+          path: .cloudflare/podaj-*.tgz
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: check
+    if: github.repository == 'hasparus/podaj' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: podaj-npm-publication
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install frozen dependencies and OIDC-capable npm
+        run: |
+          bun install --frozen-lockfile
+          npm install --global npm@11.5.1 --ignore-scripts
+      - name: Preflight publication ref, version, authentication and registry
+        run: bun scripts/release.ts preflight-publish
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Download the tested archive from this run
+        uses: actions/download-artifact@v4
+        with:
+          name: podaj-tested-${{ github.sha }}
+          path: .cloudflare
+      - name: Publish the existing archive once with provenance
+        run: bun scripts/release.ts publish
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -66,7 +66,7 @@ export const demoEnvironment = (token: string, ambient: NodeJS.ProcessEnv): Node
   };
 };
 
-export const publishRef = (ref: string, version: string, reachableFromMain: boolean): void => {
+export const sourceRef = (ref: string, version: string, reachableFromMain: boolean): void => {
   if (ref !== "refs/heads/main" && !ref.startsWith("refs/tags/v")) {
     throw new Error("production release requires main or a v* tag");
   }
@@ -210,12 +210,15 @@ const validateSourceRef = (root: string, env: NodeJS.ProcessEnv): string => {
   const reachable = spawnSync("git", ["merge-base", "--is-ancestor", "HEAD", "refs/remotes/origin/main"], { cwd: root, stdio: "pipe" });
   if (reachable.error || (reachable.status !== 0 && reachable.status !== 1)) throw new Error("could not verify origin/main ancestry");
   const version = packageVersion(root);
-  publishRef(required(env, "GITHUB_REF"), version, reachable.status === 0);
+  sourceRef(required(env, "GITHUB_REF"), version, reachable.status === 0);
   return version;
 };
 
 const validatePublish = (root: string, env: NodeJS.ProcessEnv): string => {
   const version = validateSourceRef(root, env);
+  if (env.GITHUB_EVENT_NAME !== "push" || env.GITHUB_REF !== `refs/tags/v${version}`) {
+    throw new Error("npm publication requires a pushed version tag matching package.json");
+  }
   const npmVersion = run("npm", ["--version"], root, env).trim().split(".").map(Number);
   if (!npmVersion[0] || npmVersion[0] < 11 || (npmVersion[0] === 11 && (npmVersion[1]! < 5 || (npmVersion[1] === 5 && npmVersion[2]! < 1)))) {
     throw new Error("npm >=11.5.1 is required for trusted publishing");

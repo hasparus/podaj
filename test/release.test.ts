@@ -8,13 +8,13 @@ import { securityHeaders } from "../src/security.js";
 import { workerConfig } from "../scripts/stage-worker.js";
 import {
   assertUnpublished, DEMO_ACCOUNT, demoConfig, demoEnvironment, packageVersion,
-  publicationAuth, publishRef, redactDiagnostics, releaseMain, required, requireUpstream, smokeDemo,
+  publicationAuth, sourceRef, redactDiagnostics, releaseMain, required, requireUpstream, smokeDemo,
 } from "../scripts/release.js";
 
 vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
 const spawn = vi.mocked(spawnSync);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const upstream = { GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: "hasparus/podaj", GITHUB_REF: "refs/heads/main" };
+const upstream = { GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: "hasparus/podaj", GITHUB_REF: "refs/heads/main", GITHUB_EVENT_NAME: "push" };
 const credentials = { ...upstream, CLOUDFLARE_API_TOKEN: "synthetic-management", TURNSTILE_SECRET_KEY: "synthetic-runtime", TURNSTILE_SITE_KEY: "synthetic-site" };
 const temporary: string[] = [];
 const fixture = () => {
@@ -126,7 +126,10 @@ describe("release preflights and isolation", () => {
     mkdirSync(join(directory, "node_modules/wrangler"), { recursive: true });
     writeFileSync(join(directory, "node_modules/wrangler/package.json"), '{"version":"4.45.0"}');
     spawn.mockReturnValue(success());
+    const registry = vi.fn(async () => Response.json({ version: "0.1.0" }));
+    vi.stubGlobal("fetch", registry);
     await releaseMain("deploy-demo", directory, credentials);
+    expect(registry).not.toHaveBeenCalled();
     expect(spawn).toHaveBeenCalledTimes(3);
     const [deploy, secret] = spawn.mock.calls.filter(([command]) => command === "node");
     expect(deploy![0]).toBe("node");
@@ -197,15 +200,32 @@ describe("release preflights and isolation", () => {
 });
 
 describe("immutable npm release gates", () => {
+  it.each([
+    ["push", "refs/heads/main"],
+    ["workflow_dispatch", "refs/heads/main"],
+    ["workflow_dispatch", "refs/tags/v0.1.0"],
+    ["pull_request", "refs/tags/v0.1.0"],
+  ])("refuses npm publication from %s on %s before npm or registry access", async (event, ref) => {
+    spawn.mockReturnValue(success());
+    const registry = vi.fn();
+    vi.stubGlobal("fetch", registry);
+    for (const command of ["preflight-publish", "publish"]) {
+      await expect(releaseMain(command, fixture(), { ...upstream, GITHUB_EVENT_NAME: event, GITHUB_REF: ref, NPM_TOKEN: "synthetic" }))
+        .rejects.toThrow("npm publication requires a pushed version tag matching package.json");
+    }
+    expect(spawn.mock.calls.every(([command]) => command === "git")).toBe(true);
+    expect(registry).not.toHaveBeenCalled();
+  });
+
   it.each(["refs/heads/main", "refs/tags/v0.1.0"])("allows reachable %s", (ref) => {
-    expect(() => publishRef(ref, "0.1.0", true)).not.toThrow();
+    expect(() => sourceRef(ref, "0.1.0", true)).not.toThrow();
   });
   it.each([
     ["refs/heads/feature", true, /requires main/], ["refs/tags/v0.2.0", true, /match package/],
     ["refs/tags/v0.1.0", false, /reachable/], ["refs/heads/main", false, /reachable/],
     ["refs/tags/not-a-version", true, /requires main/],
   ] as const)("rejects %s with ancestry %s", (ref, reachable, error) => {
-    expect(() => publishRef(ref, "0.1.0", reachable)).toThrow(error);
+    expect(() => sourceRef(ref, "0.1.0", reachable)).toThrow(error);
   });
   it("reads the actual package version", () => expect(packageVersion(fixture())).toBe("0.1.0"));
 
@@ -244,7 +264,7 @@ describe("immutable npm release gates", () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => url.endsWith("/0.1.0")
       ? Response.json({ error: "Not found" }, { status: 404 }) : Response.json({ name: "podaj" })));
     await releaseMain("publish", directory, {
-      ...upstream, GITHUB_REF: "refs/heads/main", NPM_TOKEN: bootstrap ? "synthetic-bootstrap" : "",
+      ...upstream, GITHUB_REF: "refs/tags/v0.1.0", NPM_TOKEN: bootstrap ? "synthetic-bootstrap" : "",
       ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.test", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc",
       CLOUDFLARE_API_TOKEN: "foreign",
     });
@@ -326,21 +346,5 @@ describe("HTTP demo smoke (stub responses only; no Turnstile bypass)", () => {
       headers: { ...securityHeaders(), "Content-Type": "text/html", "Cache-Control": "no-store" },
     }));
     await expect(smokeDemo(smokeOrigin, "site", fetcher)).rejects.toThrow(/unexpected demo asset/);
-  });
-});
-
-describe("production workflow wiring", () => {
-  it("serializes upstream-only opt-in publication, testing before packing and rollout before publishing", () => {
-    const workflow = readFileSync(join(root, ".github/workflows/release.yml"), "utf8");
-    for (const text of ["workflow_dispatch:", "type: boolean", "default: false", "tags: ['v*']", "github.repository == 'hasparus/podaj'", "cancel-in-progress: false", "group: podaj-production-release", "id-token: write", "fetch-depth: 0", "node-version: 24", "bun-version: 1.4.4", "bun install --frozen-lockfile", "npm@11.5.1", "inputs.publish == true", "secrets.NPM_TOKEN", "secrets.CLOUDFLARE_API_TOKEN", "secrets.TURNSTILE_SECRET_KEY", "vars.TURNSTILE_SITE_KEY", "No captcha bypass"]) expect(workflow).toContain(text);
-    expect(workflow).toContain("if: github.repository == 'hasparus/podaj' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))");
-    expect(workflow).toContain("path: .cloudflare/podaj-*.tgz");
-    expect(workflow).toContain("include-hidden-files: true");
-    expect(workflow).toContain("if-no-files-found: error");
-    const order = ["preflight-demo", "preflight-publish", "bun run check", "bun run test", "release.ts pack", "actions/upload-artifact@v4", "release.ts deploy-demo", "release.ts smoke-demo", "release.ts publish"];
-    for (let index = 1; index < order.length; index++) expect(workflow.indexOf(order[index]!)).toBeGreaterThan(workflow.indexOf(order[index - 1]!));
-    expect(workflow.match(/if: env.PUBLISH == 'true'/gu)).toHaveLength(2);
-    expect(workflow).not.toMatch(/bunx.*wrangler|npm publish|--no-verify|continue-on-error|secrets-file/u);
-    expect(workflow).not.toContain("bun run build");
   });
 });
