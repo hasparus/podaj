@@ -3,6 +3,7 @@ import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware } from "effec
 import { CapabilityPolicy } from "./policy.js";
 import { Quota } from "./errors.js";
 import { CAPABILITY, HANDOFF_ID } from "./protocol.js";
+import { CreateContextInput, StoredRequestContextSchema } from "./context-contract.js";
 
 export const HandoffId = Schema.String.check(Schema.isPattern(HANDOFF_ID));
 export const Capability = Schema.String.check(Schema.isPattern(CAPABILITY));
@@ -11,11 +12,16 @@ export const VerificationFields = Schema.Struct({
   challenge: Capability,
   turnstileToken: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(2048)),
 });
-export const ReserveBody = Schema.Struct({ recipientPublicKey: PublicKey });
+export const RecipientBody = Schema.Struct({ recipientPublicKey: PublicKey });
+export const ReserveBody = Schema.Union([
+  RecipientBody,
+  Schema.Struct({ ...RecipientBody.fields, id: HandoffId, writeToken: Capability }),
+]);
 export const ApprovalBody = Schema.Struct({
-  ...ReserveBody.fields,
+  ...RecipientBody.fields,
   ...VerificationFields.fields,
 });
+export const CreatedContext = StoredRequestContextSchema.annotate({ httpApiStatus: 201 });
 export const FillBody = Schema.Struct({ sealed: Schema.String });
 export const Config = Schema.Struct({
   access: Schema.Literals(["private", "public"]),
@@ -36,6 +42,7 @@ export const Reservation = Schema.Struct({
   subscribeToken: Capability,
   handoffTtlSeconds: Schema.Number,
 }).annotate({ httpApiStatus: 201 });
+export const Writable = Schema.Struct({ authorized: Schema.Literal(true) });
 export const Filled = Schema.Struct({ id: HandoffId, expiresAt: Schema.Number });
 export const Status = Schema.Struct({ status: Schema.Literals(["pending", "ready"]), expiresAt: Schema.Number });
 export const Consumed = Schema.Struct({ sealed: Schema.String, recipientFingerprint: Capability });
@@ -62,11 +69,20 @@ export const HandoffsApi = HttpApi.make("podaj").add(
     HttpApiEndpoint.get("demoStatus", "/api/demo/status", {
       success: [CredentialPending, CredentialApproved], error: errors,
     }),
+    HttpApiEndpoint.post("createContext", "/api/contexts", {
+      payload: CreateContextInput, success: CreatedContext, error: errors,
+    }),
+    HttpApiEndpoint.get("getContext", "/api/contexts/:id", {
+      params: { id: HandoffId }, success: StoredRequestContextSchema, error: errors,
+    }),
     HttpApiEndpoint.post("reserve", "/api/handoffs/reserve", {
-      payload: ReserveBody, success: Reservation, error: errors,
+      payload: ReserveBody, success: Reservation, error: [...errors, Gone],
     }),
     HttpApiEndpoint.put("fill", "/api/handoffs/:id", {
       params: { id: HandoffId }, payload: FillBody, success: Filled, error: [...errors, Gone],
+    }).middleware(CapabilityPolicy),
+    HttpApiEndpoint.get("writable", "/api/handoffs/:id/writable", {
+      params: { id: HandoffId }, success: Writable, error: [...errors, Gone],
     }).middleware(CapabilityPolicy),
     HttpApiEndpoint.get("status", "/api/handoffs/:id/status", {
       params: { id: HandoffId }, success: Status, error: [...errors, Gone],

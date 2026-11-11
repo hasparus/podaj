@@ -38,7 +38,7 @@ export const AUTHORIZATION_STATUS = {
   loading: "Loading verification…",
   waiting: "Complete verification to continue.",
   checking: "Checking verification…",
-  verified: "Verified. Return to your CLI.",
+  verified: "Verified. Opening your request…",
   failed: "Verification failed. Check your connection and reload this page.",
   expired: "Verification expired. Reload this page to try again.",
 } as const;

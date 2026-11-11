@@ -10,9 +10,9 @@ npm i -g podaj
 podaj wait API_KEY
 ```
 
-Requires Node.js 22+. Uses the public demo at `https://podaj.fyi` by default (no deployment or configuration needed). Approve the request in your browser, then share the fill link and keep the CLI running.
+Requires Node.js 22+. Uses the public demo at `https://podaj.fyi` by default (no deployment or configuration needed). Share the single short link with the human and keep the CLI running. They verify, fill the prefilled rows, and click **send** in the same tab; they do not need the agent's terminal.
 
-Requested names are hints, not filters: every received field is preserved, even if its name differs from what you asked for. `wait` prints metadata, never values, on stdout:
+Requested names prefill editable rows. They are hints, not filters: every received field is preserved, even if its name differs from what you asked for. Request details are encrypted on the server; their decryption secret stays in the link fragment. `wait` prints metadata, never values, on stdout:
 
 ```json
 {"names":["API_KEY","deployment note"],"file":"/home/you/.local/share/podaj/inbox/example.age","identity":"/home/you/.local/share/podaj/age-identity.txt"}
@@ -32,16 +32,11 @@ Receipts live in `${XDG_DATA_HOME:-$HOME/.local/share}/podaj/inbox` (files 0600,
 
 ## self-hosting
 
-```sh
-podaj deploy
-podaj wait API_KEY
-```
-
-`deploy` handles Cloudflare login, deploys your Worker, and saves its connection automatically. No Bun, checkout, or separate Wrangler installation is needed.
-
-Already deployed with the button? Run `podaj config` to connect instead:
-
+Click the button
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/hasparus/podaj)
+and run `podaj config` to connect.
+
+Or run through CLI with `podaj deploy`, which handles Cloudflare login, deploys your Worker, and saves its connection automatically.
 
 For non-interactive private connections, pass the Worker secret on stdin:
 
@@ -49,8 +44,22 @@ For non-interactive private connections, pass the Worker secret on stdin:
 printf '%s\n' "$PODAJ_API_AUTH_SECRET" | podaj config --url https://<name>.workers.dev
 ```
 
-Workers default to `PODAJ_ACCESS=private`, requiring `PODAJ_API_AUTH_SECRET`. `PODAJ_ACCESS=public` uses Turnstile approval and bounded admission; configure `TURNSTILE_SITE_KEY` and the `TURNSTILE_SECRET_KEY` Worker secret before enabling it. Run `podaj config --url https://podaj.fyi` to return to the demo.
+Workers default to `PODAJ_ACCESS=private`, requiring `PODAJ_API_AUTH_SECRET`. `PODAJ_ACCESS=public` uses Turnstile approval and bounded admission; configure `TURNSTILE_SITE_KEY` and the `TURNSTILE_SECRET_KEY` Worker secret before enabling it.
 
-**Security:** names and values are encrypted before upload. Fresh memory-only RSA transport keys are separate from your unencrypted, owner-readable local age identity. `wait` never automatically writes plaintext values to stdout, files, or the global environment. Receipts avoid accidental plaintext artifacts, not a compromised user/device. Handoffs expire after 2 hours; collection is atomic and at most once. Lost responses need a new request; receipts do not guarantee crash/network-loss recovery. Fill links never contain your instance token. Browser encryption still trusts the host's code. See [SECURITY.md](SECURITY.md).
+### or not self-hosting
 
-Development only (Bun 1.4.4): `bun install`, `bun run dev`, `bun run check`, `bun run test`.
+Run `podaj config --url https://podaj.fyi` to return to the demo.
+
+## security
+
+- Names and values are encrypted before upload.
+- Fresh memory-only RSA transport keys are separate from your unencrypted, owner-readable local age identity.
+- `wait` never automatically writes plaintext values to stdout, files, or the global environment. Receipts avoid accidental plaintext artifacts, not a compromised user/device.
+- Handoffs expire after 2 hours; collection is atomic and at most once. Lost responses need a new request; receipts do not guarantee crash/network-loss recovery.
+- Fill links never contain your instance token.
+- Browser encryption still trusts the host's code: modified code could read values before encryption. Self-hosting puts the served code under your control; the browser and deployment must still be trusted.
+- See [SECURITY.md](SECURITY.md).
+
+## development
+
+Bun 1.4.4: `bun install`, `bun run dev`, `bun run check`, `bun run test`.

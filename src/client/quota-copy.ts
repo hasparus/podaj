@@ -32,6 +32,24 @@ export const quotaExplanation = (quota?: QuotaInfo): QuotaExplanation => {
         ownerHelp: "Adjust PUBLIC_API_LIMITER’s simple.limit and simple.period in wrangler.jsonc, then redeploy.",
       };
     }
+    case "context_drafts_daily": {
+      return {
+        text: `Daily request-link limit reached (${limit}).${resetText(quota)}`,
+        ownerHelp: sourceSetting("draftsPerDay"),
+      };
+    }
+    case "context_drafts_per_ip": {
+      return {
+        text: `Request-link limit reached for this IP (${limit}${quota.periodSeconds === undefined ? "" : ` per ${quota.periodSeconds} seconds`}).${resetText(quota)}`,
+        ownerHelp: sourceSetting("draftsPerMinutePerIp"),
+      };
+    }
+    case "context_drafts_live": {
+      return {
+        text: `Pending request-link limit reached (${limit}). Wait for expiry.`,
+        ownerHelp: `${sourceSetting("liveDrafts")} Adjust REQUEST_CONTEXT_LIMITS.draftTtlMs in src/handoffs/protocol.ts to expire pending links sooner.`,
+      };
+    }
     case "live_handoffs": {
       return {
         text: `Active handoff limit reached (${limit}). Collect one or wait for expiry.`,

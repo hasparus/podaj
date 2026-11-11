@@ -13,6 +13,7 @@ export class InspectableHandoffParty extends HandoffParty {
   snapshot() {
     return {
       handoffs: this.ctx.storage.sql.exec("SELECT * FROM handoffs").toArray(),
+      contexts: this.ctx.storage.sql.exec("SELECT * FROM contexts").toArray(),
       credentials: this.ctx.storage.sql.exec("SELECT * FROM credentials").toArray(),
       counters: this.ctx.storage.sql.exec("SELECT * FROM counters").toArray(),
       sockets: this.ctx.getWebSockets().map((socket) => socket.deserializeAttachment()),
@@ -23,6 +24,7 @@ export class InspectableHandoffParty extends HandoffParty {
     for (const socket of this.ctx.getWebSockets()) socket.close(1000, "test reset");
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec("DELETE FROM handoffs");
+      this.ctx.storage.sql.exec("DELETE FROM contexts");
       this.ctx.storage.sql.exec("DELETE FROM credentials");
       this.ctx.storage.sql.exec("DELETE FROM counters");
     });

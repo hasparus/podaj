@@ -5,14 +5,16 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { generateX25519Identity, identityToRecipient } from "age-encryption";
 import type { ReceivedHandoff } from "../scripts/age-output.js";
 import { defaultAgeIdentityPath } from "../scripts/age-output.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { admissionProofData, approveAdmission, parseAuthorizationRequest } from "../src/client/admission.js";
+import { admissionProofData, approveAdmission, waitForReservation } from "../src/client/admission.js";
 import { init, Message, update, type Model } from "../src/client/app.js";
 import { parseAppRoute } from "../src/client/parse-route.js";
+import { loadRequestContext, parseContextLink } from "../src/client/request-context.js";
+import { openRequestContext } from "../src/crypto/request-context.js";
 import { seal } from "../src/crypto/podaj1.js";
 import { recipientIdentity } from "../scripts/instance.js";
 import { nativeRuntime, OWNER, type NativeRuntime } from "./helpers/native-runtime.js";
@@ -69,7 +71,7 @@ const setup = async (runtime = privateRuntime, existingKeys: ExistingKeys = "non
     cleanups.push(async () => { result.child.kill(); await result.catch(() => undefined); });
     return {
       result, child: result.child, stdout: () => stdout, stderr: () => stderr,
-      link: async (path: "/s/" | "/authorize#") => {
+      link: async (path: "/s/") => {
         let line: string | undefined;
         await vi.waitFor(() => {
           line = stderr.split("\n").find((value) => value.startsWith(`${runtime.origin}${path}`));
@@ -83,20 +85,35 @@ const setup = async (runtime = privateRuntime, existingKeys: ExistingKeys = "non
 };
 type CliRun = ReturnType<Awaited<ReturnType<typeof setup>>["run"]>;
 
-const fill = async (runtime: NativeRuntime, cli: CliRun, pasted = "API_KEY=synthetic-env-value\nOTHER=not-requested\n") => {
-  const link = await cli.link("/s/");
+const fill = async (runtime: NativeRuntime, cli: CliRun, pasted = "API_KEY=synthetic-env-value\nOTHER=not-requested\n", browserUrl?: URL) => {
+  const link = browserUrl ?? await cli.link("/s/");
+  const parsed = parseContextLink(link.pathname, link.hash);
+  if (parsed === null) throw new Error("missing short request context link");
+  const context = await loadRequestContext(parsed);
   const initial = init(parseAppRoute(link.pathname, link.hash));
+  const requestedKeys = context.requestedKeys;
+  for (const request of await runtime.requests()) {
+    for (const key of requestedKeys) expect(request.body).not.toContain(key);
+  }
   let model: Model = initial.model;
   for (const command of initial.commands ?? []) model = update(model, await Effect.runPromise(command.effect)).model;
-  expect(model.recipientReady && model.limitsReady).toBe(true);
+  expect(Option.isSome(model.sender)).toBe(true);
+  if (requestedKeys.length > 0) {
+    expect(model.rows.map((row) => row.key)).toEqual(requestedKeys);
+    expect(model.rows.every((row) => row.value === "")).toBe(true);
+  }
   const edited = update(model, Message.PastedEnv({ text: pasted }));
   expect(edited.commands ?? []).toHaveLength(0);
+  let filled = edited.model;
+  for (const row of filled.rows.filter((candidate) => candidate.key.length > 0 && candidate.value.length === 0)) {
+    filled = update(filled, Message.ClickedRemoveRow({ rowId: row.id })).model;
+  }
   await vi.waitFor(async () => { expect((await runtime.snapshot()).sockets).toHaveLength(1); });
   expect((await runtime.snapshot()).handoffs).toMatchObject([{ state: "pending", sealed: null }]);
   expect((await runtime.requests()).filter((request) => request.method === "PUT" || request.path.endsWith("/consume"))).toEqual([]);
   expect(cli.stdout()).toBe("");
   expect(cli.child.exitCode).toBeNull();
-  const submitted = update(edited.model, Message.ClickedSend());
+  const submitted = update(filled, Message.ClickedSend());
   expect(submitted.commands).toHaveLength(1);
   const command = submitted.commands?.[0];
   if (!command) throw new Error("send command missing");
@@ -113,8 +130,8 @@ const openReceipt = async (receipt: ReceivedHandoff, identity = receipt.identity
   expect(decrypted.stderr).toBe("");
   return JSON.parse(decrypted.stdout) as { vars: { key: string; value: string }[] };
 };
-const complete = async (runtime: NativeRuntime, cli: CliRun, expected: Record<string, string> = { API_KEY: "synthetic-env-value", OTHER: "not-requested" }, pasted?: string) => {
-  const link = await fill(runtime, cli, pasted);
+const complete = async (runtime: NativeRuntime, cli: CliRun, expected: Record<string, string> = { API_KEY: "synthetic-env-value", OTHER: "not-requested" }, pasted?: string, browserUrl?: URL) => {
+  const link = await fill(runtime, cli, pasted, browserUrl);
   const output = await cli.result;
   const received = JSON.parse(output.stdout) as ReceivedHandoff;
   expect(received.names).toEqual(Object.keys(expected));
@@ -129,13 +146,37 @@ const complete = async (runtime: NativeRuntime, cli: CliRun, expected: Record<st
   expect(await openReceipt(received)).toEqual({ vars: Object.entries(expected).map(([key, value]) => ({ key, value })) });
   expect((await runtime.snapshot()).handoffs).toMatchObject([{ state: "consumed", sealed: null }]);
   const requests = await runtime.requests();
+  const parsed = parseContextLink(link.pathname, link.hash)!;
+  expect(link.search).toBe("");
+  expect(link.hash).toMatch(/^#[A-Za-z0-9_-]{43}$/u);
+  expect(link.href.length).toBe(runtime.origin.length + 79);
+  expect(output.stderr.split("\n").filter((line) => /^https?:\/\//u.test(line))).toEqual([link.href]);
+  const staged = requests.filter((request) => request.path === "/api/contexts");
+  expect(staged).toHaveLength(1);
+  const stageBody = JSON.parse(staged[0].body) as { id: string; writeHash: string; encryptedContext: string };
+  expect(Object.keys(stageBody)).toEqual(["id", "writeHash", "encryptedContext"]);
+  const context = await openRequestContext(parsed.id, parsed.key, stageBody.encryptedContext);
+  expect(stageBody.id).toBe(parsed.id);
+  expect(stageBody.writeHash).toBe(createHash("sha256").update(context.writeToken).digest("hex"));
+  expect(stageBody.encryptedContext).toMatch(/^[A-Za-z0-9_-]+$/u);
+  expect(staged[0].body).not.toContain(context.recipientPublicKey);
+  expect(staged[0].body).not.toContain(recipientIdentity(context.recipientPublicKey).encoded);
+  expect(staged[0].body).not.toContain(context.writeToken);
+  for (const request of requests) {
+    expect(JSON.stringify(request)).not.toContain(parsed.key);
+    expect(JSON.stringify(request)).not.toContain("PRIVATE KEY");
+  }
+  expect(JSON.stringify((await runtime.snapshot()).contexts)).not.toContain(parsed.key);
   const uploads = requests.filter((request) => request.method === "PUT");
   expect(uploads).toHaveLength(1);
   expect(Object.keys(JSON.parse(uploads[0].body))).toEqual(["sealed"]);
   expect(uploads[0].body).not.toContain("API_KEY");
   expect(uploads[0].body).not.toContain("synthetic-env-value");
   expect(requests.filter((request) => request.path.endsWith("/consume"))).toHaveLength(1);
-  return { ...output, received, link, requests };
+  for (const request of requests) {
+    for (const key of received.names) expect(request.body).not.toContain(key);
+  }
+  return { ...output, received, link, requests, context };
 };
 
 describe("compiled CLI → production human gates → Worker/SQLite/native WS → CLI", () => {
@@ -243,23 +284,26 @@ describe("compiled CLI → production human gates → Worker/SQLite/native WS �
     const publicKeys: string[] = [];
     for (let attempt = 0; attempt < 2; attempt++) {
       if (attempt > 0) await privateRuntime.reset();
-      const { stdout, stderr, link, requests } = await complete(privateRuntime, instance.run(["wait", "API_KEY"]));
+      const { stdout, stderr, link, requests, context } = await complete(privateRuntime, instance.run(["wait", " API_KEY ", "API_KEY"]));
       expect(`${stdout}${stderr}`).not.toContain(OWNER);
       expect(stderr).not.toContain("PRIVATE KEY");
+      expect(existsSync(instance.keysDir)).toBe(false);
+      expect(requests.find((request) => request.path === "/api/contexts")?.authorization).toBe(`Bearer ${OWNER}`);
       const publicPem: string = JSON.parse(requests.find((request) => request.path === "/api/handoffs/reserve")!.body).recipientPublicKey;
       publicKeys.push(publicPem);
       expect(createPublicKey(publicPem).asymmetricKeyDetails?.modulusLength).toBe(2048);
-      const fragment = new URLSearchParams(link.hash.slice(1));
-      expect([...fragment.keys()]).toEqual(["write", "recipient"]);
-      expect(fragment.get("recipient")).toBe(recipientIdentity(publicPem).encoded);
+      expect(context.requestedKeys).toEqual(["API_KEY"]);
+      expect(context.recipientPublicKey).toBe(publicPem);
+      expect(context.challenge).toBeUndefined();
       const writeAuth = requests.find((request) => request.method === "PUT")!.authorization;
       const subscribeAuth = requests.find((request) => request.path.startsWith("/parties/"))!.authorization;
       const readAuth = requests.find((request) => request.path.endsWith("/consume"))!.authorization;
       expect(new Set([writeAuth, subscribeAuth, readAuth]).size).toBe(3);
-      expect(writeAuth).toBe(`Bearer ${fragment.get("write")}`);
+      expect(writeAuth).toBe(`Bearer ${context.writeToken}`);
       for (const capability of [subscribeAuth, readAuth]) expect(stderr).not.toContain(capability!.slice(7));
       expect(requests.some((request) => request.path.endsWith("/status"))).toBe(false);
-      expect(stderr.split("\n").slice(0, 2)).toEqual(["paste these keys and click send:", "API_KEY"]);
+      expect(stderr.split("\n").slice(0, 2)).toEqual(["fill in the values and click send:", link.href]);
+      expect(stderr).not.toContain("API_KEY");
       const identity = defaultAgeIdentityPath({}, instance.home);
       expect((await stat(identity)).mode & 0o777).toBe(0o600);
       expect((await readdir(join(instance.home, ".local/share/podaj/inbox"))).every((file) => file.endsWith(".age"))).toBe(true);
@@ -279,11 +323,27 @@ describe("compiled CLI → production human gates → Worker/SQLite/native WS �
     expect(requests.find((request) => request.path === "/api/handoffs/reserve")?.authorization).toBe(`Bearer ${OWNER}`);
   });
 
-  it("keeps public access pending until production approval, then pending until production ClickedSend", async () => {
+  it("uses one short public link through production loading, approval, and explicit send with sender authority only", async () => {
     const instance = await setup(demoRuntime);
-    const cli = instance.run(["wait", "API_KEY"]);
-    const link = await cli.link("/authorize#");
-    const approval = parseAuthorizationRequest(link.hash);
+    const cli = instance.run(["wait", " API_KEY ", "API_KEY"], OWNER);
+    const link = await cli.link("/s/");
+    const parsed = parseContextLink(link.pathname, link.hash)!;
+    const context = await loadRequestContext(parsed);
+    if (context.challenge === undefined) throw new Error("missing admission challenge");
+    const approval = {
+      challenge: context.challenge, recipientPublicKey: context.recipientPublicKey,
+      id: parsed.id, writeToken: context.writeToken, requestedKeys: [...context.requestedKeys],
+    };
+    expect(approval.requestedKeys).toEqual(["API_KEY"]);
+    expect(Object.keys(context).sort()).toEqual(["challenge", "recipientPublicKey", "requestedKeys", "version", "writeToken"]);
+    const navigate = vi.fn();
+    vi.stubGlobal("location", { replace: navigate });
+    const loading = init(parseAppRoute(link.pathname, link.hash));
+    expect(loading.commands).toHaveLength(1);
+    expect(await Effect.runPromise(loading.commands![0].effect)).toEqual(Message.OpenedVerification());
+    expect(navigate).toHaveBeenCalledExactlyOnceWith(`/authorize/${parsed.id}#${parsed.key}`);
+    const verificationLink = new URL(navigate.mock.calls[0]![0], link.origin);
+    expect(await loadRequestContext(parseContextLink(verificationLink.pathname, verificationLink.hash)!)).toEqual(context);
     await vi.waitFor(async () => {
       expect((await demoRuntime.requests()).filter((request) => request.path === "/api/demo/status").length).toBeGreaterThanOrEqual(2);
     }, { timeout: 5000 });
@@ -291,21 +351,53 @@ describe("compiled CLI → production human gates → Worker/SQLite/native WS �
     const pending = await demoRuntime.request("/api/demo/status", { headers: { Authorization: pendingAuth } });
     expect(pending.status).toBe(202);
     expect(await pending.json()).toEqual({ status: "pending" });
-    expect((await demoRuntime.snapshot()).handoffs).toEqual([]);
-    expect((await demoRuntime.snapshot()).credentials).toEqual([]);
+    const beforeApproval = await demoRuntime.snapshot();
+    expect(beforeApproval.handoffs).toEqual([]);
+    expect(beforeApproval.credentials).toEqual([]);
+    expect(beforeApproval.contexts).toHaveLength(1);
     expect(cli.child.exitCode).toBeNull();
     expect(cli.stdout()).toBe("");
-    expect(cli.stderr()).not.toContain(`${demoRuntime.origin}/s/`);
     expect(demoRuntime.verifications).toEqual([]);
     demoRuntime.proof({ success: true, hostname: new URL(demoRuntime.origin).hostname, action: "podaj-admission", cdata: await admissionProofData(approval) });
     await approveAdmission(approval, "controlled-test-proof");
     expect(demoRuntime.verifications).toHaveLength(1);
     expect(new URLSearchParams(demoRuntime.verifications[0]).get("response")).toBe("controlled-test-proof");
-    const { stderr, requests } = await complete(demoRuntime, cli);
+    await waitForReservation(approval, { timeoutMs: 5000, intervalMs: 250 });
+    const browserUrl = new URL(`/s/${parsed.id}#${parsed.key}`, link.origin);
+    expect(browserUrl.href).toBe(link.href);
+    const { stdout, stderr, requests } = await complete(demoRuntime, cli, undefined, undefined, browserUrl);
+    expect(stderr.split("\n").filter((line) => /^https?:\/\//u.test(line))).toEqual([link.href]);
+    expect(stderr).not.toContain("API_KEY");
+    expect(stderr).not.toContain("return to CLI");
     const credential = requests.find((request) => request.path === "/api/demo/status")!.authorization!.slice(7);
     expect(approval.challenge).toBe(createHash("sha256").update(credential).digest("hex"));
     expect(stderr).not.toContain(credential);
-    expect(requests.find((request) => request.path === "/api/handoffs/reserve")?.authorization).toBe(`Bearer ${credential}`);
+    const stage = requests.find((request) => request.path === "/api/contexts")!;
+    expect(stage.authorization).toBeNull();
+    expect(stage.body).not.toContain(credential);
+    expect(requests.every((request) => request.authorization !== `Bearer ${OWNER}`)).toBe(true);
+    const reservation = requests.find((request) => request.path === "/api/handoffs/reserve")!;
+    expect(reservation.authorization).toBe(`Bearer ${credential}`);
+    const reservationBody = JSON.parse(reservation.body) as { recipientPublicKey: string; id: string; writeToken: string };
+    expect(reservationBody).toEqual({ recipientPublicKey: expect.any(String), id: approval.id, writeToken: approval.writeToken });
+    expect(recipientIdentity(reservationBody.recipientPublicKey)).toEqual(recipientIdentity(approval.recipientPublicKey));
+    expect(JSON.parse(requests.find((request) => request.path === "/api/demo/approve")!.body)).toEqual({
+      challenge: approval.challenge, recipientPublicKey: approval.recipientPublicKey, turnstileToken: "controlled-test-proof",
+    });
+    const writable = requests.filter((request) => request.path.endsWith("/writable"));
+    expect(writable.length).toBeGreaterThan(0);
+    expect(writable.every((request) => request.method === "GET" && request.authorization === `Bearer ${approval.writeToken}`)).toBe(true);
+    expect(requests.find((request) => request.method === "PUT")?.authorization).toBe(`Bearer ${approval.writeToken}`);
+    const subscribeAuth = requests.find((request) => request.path.startsWith("/parties/"))!.authorization!;
+    const readAuth = requests.find((request) => request.path.endsWith("/consume"))!.authorization!;
+    expect(new Set([`Bearer ${approval.writeToken}`, subscribeAuth, readAuth, `Bearer ${credential}`]).size).toBe(4);
+    for (const secret of [credential, subscribeAuth.slice(7), readAuth.slice(7)]) {
+      expect(`${link.href}${browserUrl.href}${JSON.stringify(approval)}${stdout}${stderr}`).not.toContain(secret);
+    }
+    expect(`${stdout}${stderr}`).not.toContain("PRIVATE KEY");
+    expect((await demoRuntime.request(`/api/handoffs/${approval.id}/consume`, {
+      method: "POST", headers: { Authorization: `Bearer ${approval.writeToken}` },
+    })).status).toBe(401);
     expect((await stat(defaultAgeIdentityPath({}, instance.home))).mode & 0o777).toBe(0o600);
   }, 15_000);
 
@@ -324,7 +416,7 @@ describe("compiled CLI → production human gates → Worker/SQLite/native WS �
 });
 
 describe("isolated malformed-server responses", () => {
-  it.each<Malformation>(["approval-fingerprint", "overlap", "malformed-capability", "reservation-fingerprint", "id", "consumed-fingerprint", "ciphertext-key"])("rejects %s without plaintext or a completed receipt", async (malformation) => {
+  it.each<Malformation>(["stage-id", "stage-expiry", "approval-fingerprint", "public-id", "public-write", "private-id", "private-write", "overlap", "malformed-capability", "reservation-fingerprint", "id", "consumed-fingerprint", "ciphertext-key"])("rejects %s without plaintext or a completed receipt", async (malformation) => {
     const server = await malformedServer(malformation);
     cleanups.push(server.close);
     const home = await mkdtemp(join(tmpdir(), "podaj-malformed-"));
@@ -334,10 +426,37 @@ describe("isolated malformed-server responses", () => {
       timeout: 10_000,
     });
     child.child.stdin?.end();
+    void child.catch(() => undefined);
+    if (malformation === "public-id" || malformation === "public-write") {
+      let stderr = "";
+      child.child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+      let link: string | undefined;
+      await vi.waitFor(() => {
+        link = stderr.split("\n").find((line) => line.startsWith(`${server.origin}/s/`));
+        expect(link).toBeDefined();
+      });
+      const url = new URL(link!);
+      const parsed = parseContextLink(url.pathname, url.hash)!;
+      const staged = await (await fetch(`${server.origin}/api/contexts/${parsed.id}`)).json() as { encryptedContext: string };
+      const context = await openRequestContext(parsed.id, parsed.key, staged.encryptedContext);
+      server.approve(recipientIdentity(context.recipientPublicKey).fingerprint);
+      await expect(child).rejects.toMatchObject({ stderr: expect.stringContaining("different handoff id or write capability") });
+      expect(server.paths.some((path) => path.startsWith("/parties/"))).toBe(false);
+    }
     await expect(child).rejects.toMatchObject({ code: 1, stdout: "" });
+    if (malformation === "stage-id" || malformation === "stage-expiry") {
+      await expect(child).rejects.toMatchObject({ stderr: expect.stringContaining("request context staging returned an invalid id or expiry") });
+    }
+    if (malformation === "private-id" || malformation === "private-write") {
+      await expect(child).rejects.toMatchObject({ stderr: expect.stringContaining("different handoff id or write capability") });
+    }
+    if (!["approval-fingerprint", "public-id", "public-write", "consumed-fingerprint", "ciphertext-key"].includes(malformation)) {
+      await expect(child).rejects.toMatchObject({ stderr: expect.not.stringContaining(`${server.origin}/s/`) });
+      expect(server.paths.some((path) => path.startsWith("/parties/"))).toBe(false);
+    }
     expect(await readdir(join(home, ".local/share/podaj/inbox"))).toEqual([]);
     expect((await stat(defaultAgeIdentityPath({}, home))).mode & 0o777).toBe(0o600);
-    if (malformation === "approval-fingerprint") expect(server.paths).not.toContain("/api/handoffs/reserve");
+    if (["stage-id", "stage-expiry", "approval-fingerprint"].includes(malformation)) expect(server.paths).not.toContain("/api/handoffs/reserve");
     if (!["consumed-fingerprint", "ciphertext-key"].includes(malformation)) expect(server.paths.some((path) => path.endsWith("/consume"))).toBe(false);
   });
 });

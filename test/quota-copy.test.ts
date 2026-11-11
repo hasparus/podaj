@@ -7,6 +7,9 @@ const resetAt = Date.UTC(2030, 0, 2, 12, 34);
 
 describe("quota diagnostics", () => {
   it.each([
+    [{ kind: "context_drafts_daily", limit: 37, periodSeconds: 86400, resetAt }, "37", "draftsPerDay"],
+    [{ kind: "context_drafts_per_ip", limit: 4, periodSeconds: 60, resetAt }, "4", "draftsPerMinutePerIp"],
+    [{ kind: "context_drafts_live", limit: 23 }, "23", "liveDrafts"],
     [{ kind: "live_handoffs", limit: 29 }, "Active handoff limit reached (29)", "liveHandoffs"],
     [{ kind: "reservations_daily", limit: 137, periodSeconds: 86400, resetAt }, "Daily handoff limit reached (137)", "reservationsPerDay"],
     [{ kind: "reservations_per_credential", limit: 3, periodSeconds: 86400, resetAt }, "3 handoffs", "reservationsPerCredentialPerDay"],

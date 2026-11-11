@@ -5,8 +5,8 @@
 **CLI → human browser → CLI.** The CLI operator can be an AI or a human.
 
 1. The CLI creates a fresh RSA transport keypair per request and keeps its private key in memory only.
-2. The CLI creates a request and gives the human its fill link.
-3. The human fills a key/value table and clicks **send**. They never need to create a link, generate keys, or decrypt anything.
+2. The CLI stages an encrypted sender context and gives the human one short fill link. Its fragment contains the context-decryption secret; the server cannot read the requested labels.
+3. On public instances, the human verifies and continues to the prefilled key/value table in the same tab, then clicks **send**. The browser and CLI can belong to different people on different machines. The human never returns to the CLI for another link, creates a link, generates keys, or handles decryption.
 4. The browser encrypts both variable names and values with the CLI's public key before upload.
 5. The CLI collects ciphertext, decrypts in memory, and saves the entire payload in a standard binary `.age` receipt. Requested KEY labels are hints, not filters; all fields and values are preserved.
 6. Stdout reports only `{names: string[], file: absoluteAgeFilePath, identity?: localIdentityFilePath}`. `identity` is a path, never key contents. URLs/instructions remain on stderr; no plaintext values are automatically written to stdout, files, or the global environment.

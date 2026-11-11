@@ -57,8 +57,9 @@ export const validateRecipientPublicKey = async (pem: string): Promise<void> => 
     "spki", owned(pemBody(pem, "PUBLIC KEY")).buffer,
     { name: "RSA-OAEP", hash: "SHA-256" }, false, ["encrypt"],
   );
-  const algorithm = key.algorithm as RsaHashedKeyAlgorithm;
-  if (algorithm.modulusLength < 2048 || algorithm.modulusLength > 4096) {
+  const algorithm = key.algorithm;
+  if (!("modulusLength" in algorithm) || typeof algorithm.modulusLength !== "number"
+    || algorithm.modulusLength < 2048 || algorithm.modulusLength > 4096) {
     throw new Error("Choose an RSA key between 2048 and 4096 bits.");
   }
 };

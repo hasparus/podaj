@@ -10,6 +10,10 @@ globalThis.fetch = (input, options) => {
   if (url === "https://podaj.fyi/api/config") {
     return Promise.resolve(Response.json({ access: "public", handoffTtlSeconds: 7200, maxHandoffBytes: 32768, turnstileSiteKey: "synthetic-site-key" }));
   }
+  if (url === "https://podaj.fyi/api/contexts") {
+    const body = JSON.parse(String(options?.body)) as { id: string; encryptedContext: string };
+    return Promise.resolve(Response.json({ id: body.id, encryptedContext: body.encryptedContext, expiresAt: Date.now() + 180_000 }, { status: 201 }));
+  }
   if (url === "https://podaj.fyi/api/demo/status") {
     return Promise.resolve(Response.json({ error: "synthetic authorization stop" }, { status: 503 }));
   }

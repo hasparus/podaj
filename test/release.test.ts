@@ -297,13 +297,14 @@ const smokeOrigin = "https://demo.test";
 const smokeFixture = () => {
   const responses = new Map<string, () => Response>([
     ["/api/config", () => Response.json({ access: "public", turnstileSiteKey: "site", handoffTtlSeconds: 7200, maxHandoffBytes: 32768 })],
-    ...["/", "/authorize"].map((path): [string, () => Response] => [path, () => new Response(
-      `<div id="${path === "/" ? "app" : "authorize-status"}"></div><script type="module" src="/assets/app.js"></script><link rel="stylesheet" href="/assets/style.css">`,
-      { headers: { ...securityHeaders(path === "/authorize"), "Cache-Control": "no-store", "Content-Type": "text/html" } },
+    ...["/", "/authorize", `/s/${"0".repeat(32)}`, `/authorize/${"0".repeat(32)}`].map((path): [string, () => Response] => [path, () => new Response(
+      `<div id="${path.startsWith("/authorize") ? "authorize-status" : "app"}"></div><script type="module" src="/assets/app.js"></script><link rel="stylesheet" href="/assets/style.css">`,
+      { headers: { ...securityHeaders(path.startsWith("/authorize")), "Cache-Control": "no-store", "Content-Type": "text/html" } },
     )]),
     ["/assets/app.js", () => new Response("console.log('built')", { headers: { "Content-Type": "application/javascript" } })],
     ["/assets/style.css", () => new Response("body{}", { headers: { "Content-Type": "text/css" } })],
     ["/api/handoffs/reserve", () => Response.json({ error: "unauthorized" }, { status: 401 })],
+    ["/api/contexts", () => Response.json({ error: "invalid context" }, { status: 400 })],
   ]);
   const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
     expect(new URL(url).origin).toBe(smokeOrigin);
@@ -320,8 +321,10 @@ describe("HTTP demo smoke (stub responses only; no Turnstile bypass)", () => {
     const { fetcher } = smokeFixture();
     await smokeDemo(smokeOrigin, "site", fetcher);
     const posts = fetcher.mock.calls.filter(([, init]) => init?.method === "POST");
-    expect(posts).toHaveLength(1);
-    expect(posts[0]).toEqual([`${smokeOrigin}/api/handoffs/reserve`, expect.objectContaining({ body: "{}" })]);
+    expect(posts).toEqual([
+      [`${smokeOrigin}/api/contexts`, expect.objectContaining({ body: "{}" })],
+      [`${smokeOrigin}/api/handoffs/reserve`, expect.objectContaining({ body: "{}" })],
+    ]);
     expect(JSON.stringify(fetcher.mock.calls)).not.toContain("turnstileToken");
     expect(fetcher.mock.calls.some(([url]) => url.includes("/api/demo/approve"))).toBe(false);
   });
@@ -330,6 +333,10 @@ describe("HTTP demo smoke (stub responses only; no Turnstile bypass)", () => {
     ["/api/config", () => Response.json({ access: "public", turnstileSiteKey: "wrong" }), /config mismatch/],
     ["/api/config", () => new Response("unavailable", { status: 503 }), /config unavailable/],
     ["/authorize", () => new Response("not found", { status: 404 }), /document unavailable/],
+    [`/s/${"0".repeat(32)}`, () => new Response("not found", { status: 404 }), /document unavailable/],
+    [`/authorize/${"0".repeat(32)}`, () => new Response("not found", { status: 404 }), /document unavailable/],
+    ["/api/contexts", () => Response.json({ error: "not found" }, { status: 404 }), /context endpoint/],
+    ["/api/contexts", () => Response.json({ id: "unexpected" }, { status: 201 }), /context endpoint/],
     ["/", () => new Response('<div id="app"></div>', { headers: { "Content-Type": "text/html" } }), /security header/],
     ["/assets/app.js", () => new Response("<html>fallback</html>", { headers: { "Content-Type": "text/html" } }), /asset unavailable/],
     ["/assets/style.css", () => new Response("", { status: 404 }), /asset unavailable/],

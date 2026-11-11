@@ -172,6 +172,10 @@ describe("actual Workers HTTP/RPC/SQLite runtime", () => {
       expect(response.headers.get("X-Frame-Options")).toBe("DENY");
     }
     expect((await send("/authorize")).headers.get("Content-Security-Policy")).toContain("challenges.cloudflare.com");
+    const verification = await send(`/authorize/${"a".repeat(32)}`);
+    expect(verification.status).toBe(200);
+    expect(verification.headers.get("Content-Security-Policy")).toContain("challenges.cloudflare.com");
+    expect((await send(`/s/${"a".repeat(32)}`)).headers.get("Content-Security-Policy")).not.toContain("challenges.cloudflare.com");
     expect((await send("/")).headers.get("Content-Security-Policy")).not.toContain("challenges.cloudflare.com");
     expect((await runtime.dispatchFetch("https://podaj.hasparus.workers.dev/api/config")).status).toBe(404);
   });

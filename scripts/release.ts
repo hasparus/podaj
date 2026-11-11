@@ -164,15 +164,26 @@ export const smokeDemo = async (origin: string, siteKey: string, fetcher: Fetche
       typeof body.maxHandoffBytes !== "number" || body.maxHandoffBytes <= 0 || body.maxHandoffBytes > 32768) {
     throw new Error("demo public config mismatch");
   }
-  for (const path of ["/", "/authorize"]) {
+  const id = "0".repeat(32);
+  for (const { path, authorize } of [
+    { path: "/", authorize: false }, { path: "/authorize", authorize: true },
+    { path: `/s/${id}`, authorize: false }, { path: `/authorize/${id}`, authorize: true },
+  ]) {
     const response = await checkedResponse(origin, path, fetcher);
     if (response.status !== 200 || !response.headers.get("Content-Type")?.includes("text/html")) {
       throw new Error("demo document unavailable");
     }
-    secureDocument(response, path === "/authorize");
+    secureDocument(response, authorize);
     const html = await response.text();
-    if (!html.includes(path === "/" ? 'id="app"' : 'id="authorize-status"')) throw new Error("wrong demo document");
+    if (!html.includes(authorize ? 'id="authorize-status"' : 'id="app"')) throw new Error("wrong demo document");
     await smokeAssets(origin, html, fetcher);
+  }
+  const invalidContext = await checkedResponse(origin, "/api/contexts", fetcher, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  });
+  const invalid: unknown = await invalidContext.json();
+  if (invalidContext.status !== 400 || !record(invalid) || invalid.error !== "invalid context") {
+    throw new Error("demo encrypted context endpoint must reject invalid drafts without allocation");
   }
   const refused = await checkedResponse(origin, "/api/handoffs/reserve", fetcher, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",

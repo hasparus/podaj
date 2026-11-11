@@ -6,6 +6,7 @@ export const OWNER = "synthetic-instance-token-for-test";
 export interface ObservedRequest { method: string; path: string; authorization: string | null; body: string }
 export interface RuntimeSnapshot {
   handoffs: { id: string; state: string; sealed: string | null }[];
+  contexts: { id: string; write_hash: string; ciphertext: string; expires_at: number }[];
   credentials: unknown[];
   sockets: unknown[];
 }

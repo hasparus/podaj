@@ -4,15 +4,18 @@ import { WebSocketServer } from "ws";
 import { recipientIdentity } from "../../scripts/instance.js";
 import { seal } from "../../src/crypto/podaj1.js";
 
-export type Malformation = "approval-fingerprint" | "overlap" | "malformed-capability" | "reservation-fingerprint" | "id" | "consumed-fingerprint" | "ciphertext-key";
+export type Malformation = "stage-id" | "stage-expiry" | "approval-fingerprint" | "public-id" | "public-write" | "private-id" | "private-write" | "overlap" | "malformed-capability" | "reservation-fingerprint" | "id" | "consumed-fingerprint" | "ciphertext-key";
 
 /** An intentionally dishonest peer, only for CLI rejection tests; never a lifecycle success fixture. */
 export const malformedServer = async (malformation: Malformation) => {
-  const id = "1".repeat(32);
+  let id = "1".repeat(32);
+  let encryptedContext = "";
   const writeToken = "2".repeat(64);
   const readToken = "3".repeat(64);
   const subscribeToken = "4".repeat(64);
   let publicPem = "";
+  let approvalFingerprint: string | undefined;
+  const isPublic = ["approval-fingerprint", "public-id", "public-write"].includes(malformation);
   const paths: string[] = [];
   const server = createServer(async (request, response) => {
     const path = request.url ?? "";
@@ -24,13 +27,24 @@ export const malformedServer = async (malformation: Malformation) => {
       response.end(JSON.stringify(value));
     };
     if (path === "/api/config") {
-      send(200, { access: malformation === "approval-fingerprint" ? "public" : "private", handoffTtlSeconds: 7200, maxHandoffBytes: 32768 });
+      send(200, { access: isPublic ? "public" : "private", handoffTtlSeconds: 7200, maxHandoffBytes: 32768 });
+    } else if (path === "/api/contexts" && request.method === "POST") {
+      const context = JSON.parse(body) as { id: string; encryptedContext: string };
+      id = context.id;
+      encryptedContext = context.encryptedContext;
+      send(201, { id: malformation === "stage-id" ? "f".repeat(32) : id, expiresAt: malformation === "stage-expiry" ? 1 : Date.now() + 180_000 });
+    } else if (path === `/api/contexts/${id}` && request.method === "GET") {
+      send(200, { id, encryptedContext, expiresAt: Date.now() + 180_000 });
     } else if (path === "/api/demo/status") {
-      send(200, { status: "approved", expiresAt: Date.now() + 60_000, recipientFingerprint: "f".repeat(64) });
+      if (malformation === "approval-fingerprint" || approvalFingerprint !== undefined) {
+        send(200, { status: "approved", expiresAt: Date.now() + 60_000, recipientFingerprint: approvalFingerprint ?? "f".repeat(64) });
+      } else send(202, { status: "pending" });
     } else if (path === "/api/handoffs/reserve") {
-      publicPem = (JSON.parse(body) as { recipientPublicKey: string }).recipientPublicKey;
+      const reservation = JSON.parse(body) as { recipientPublicKey: string; id?: string; writeToken?: string };
+      publicPem = reservation.recipientPublicKey;
       send(201, {
-        id: malformation === "id" ? "../other" : id, writeToken, readToken,
+        id: malformation === "id" ? "../other" : ["public-id", "private-id"].includes(malformation) ? "e".repeat(32) : reservation.id,
+        writeToken: ["public-write", "private-write"].includes(malformation) ? writeToken : reservation.writeToken, readToken,
         subscribeToken: malformation === "overlap" ? readToken : malformation === "malformed-capability" ? "bad" : subscribeToken,
         expiresAt: Date.now() + 60_000,
         recipientFingerprint: malformation === "reservation-fingerprint" ? "f".repeat(64) : recipientIdentity(publicPem).fingerprint,
@@ -50,6 +64,7 @@ export const malformedServer = async (malformation: Malformation) => {
   if (address === null || typeof address === "string") throw new Error("missing local address");
   return {
     paths, origin: `http://127.0.0.1:${address.port}`,
+    approve: (fingerprint: string) => { approvalFingerprint = fingerprint; },
     close: async () => {
       for (const socket of sockets.clients) socket.terminate();
       await new Promise<void>((done) => sockets.close(() => done()));

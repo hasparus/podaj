@@ -42,7 +42,7 @@ export const admissionConfig = (env: Env): ClientConfig => {
   return config;
 };
 
-type HandoffService = Pick<HandoffParty, "reserve" | "authorizeWrite" | "fill" | "consume" | "status" | "approvalAttempt" | "approveCredential" | "credentialStatus" | "fetch">;
+type HandoffService = Pick<HandoffParty, "createContext" | "getContext" | "reserve" | "authorizeWrite" | "fill" | "consume" | "status" | "approvalAttempt" | "approveCredential" | "credentialStatus" | "fetch">;
 
 export const handoffService = (env: Env): HandoffService =>
   env.HANDOFF_PARTY.get(env.HANDOFF_PARTY.idFromName(HANDOFF_SERVICE_NAME));

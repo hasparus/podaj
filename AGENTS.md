@@ -20,10 +20,10 @@ Release CLI: `npm i -g podaj`, then `podaj wait KEY...`. With no saved connectio
 
 ## UI (Direction A · Zinc Ledger)
 
-- Transport recipient public key comes from the CLI-created fill link; its private key stays in CLI memory. Optional short fingerprint in the header — **no environments list or sidebar**
+- Transport recipient public key comes from the CLI-encrypted request context, authenticated by the fill link's fragment secret; its private key stays in CLI memory. Optional short fingerprint in the header — **no environments list or sidebar**
 - Dense lowercase chrome: brand, headings, `key` | `value`, `add`, `send`. Body and status copy use sentence case, including `Sent.` No human-facing `create link` action. Use the vendor-neutral `VARIABLE_NAME` placeholder. See `design.md`
 - Row icons from `pixelarticons` (`eye` / `eye-off` / `trash`) render as 12px glyphs; button hit targets are sized independently of glyph sizing. Keep `aria-label` `show` / `hide` / `remove`. Show and hide only when the value is non-empty
-- CLI **reserve** flow (`/s/:id#write=<capability>&recipient=<base64url-SPKI>` → fill → explicit `send`); edits stay local until sent
+- CLI stages an encrypted sender context and shares one short `/s/:id#<secret>` link. Public verification at `/authorize/:id#<secret>` returns to the same short fill URL automatically. Requested labels prefill editable rows; no terminal copy/paste or second link. Edits stay local until explicit `send`. Legacy expanded fill links remain readable.
 - Browser pages never collect or decrypt handoffs. The CLI holds collection authority and decrypts locally.
 - Footer on the fill page: plain-language security (see `HOW_IT_WORKS` in `src/client/user-facing.ts`)
 - Env-var handoff only (not vault fields). Names are labels, not shell identifiers: allow spaces, punctuation, and sentences; require non-empty, unique names. The receiving agent interprets them.
@@ -41,7 +41,7 @@ Foldkit client: `src/client/app.ts` (program) + `src/client/entry.ts` (Runtime b
 
 ## Invariants
 
-- Network ciphertext uses only the `PODAJ1.` prefix; local receipts use standard binary age files
+- Variable-bundle network ciphertext uses only the `PODAJ1.` prefix; local receipts use standard binary age files. Short-link contexts use separate authenticated AES-256-GCM ciphertext bound to the handoff ID; their fragment key and all collection secrets stay off the server.
 - Stored variable bundles are ciphertext only; server delivery metadata must not contain plaintext variable names or values. Local stdout metadata may list names, never values or key material. No private keys on the server or in git; only transport private keys must remain memory-only.
 - Product is KEY+value env vars, not login credentials
 - Envelope `env` slug is `default`; each request binds its CLI-generated recipient public key

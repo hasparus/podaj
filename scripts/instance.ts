@@ -1,11 +1,8 @@
 import type { ClientConfig } from "../src/handoffs/protocol.js";
+import { createHash, createPublicKey } from "node:crypto";
 import { handoffApiError, HOSTED_DEMO_ORIGIN, SELF_HOST_URL } from "../src/client/user-facing.js";
 
 export type Probe = "ok" | "unauthorized" | "locked" | "unreachable";
-export interface AuthorizationOptions { attempts?: number; intervalMs?: number; timeoutMs?: number }
-
-import { createHash, createPublicKey, randomBytes } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
 
 export const originOf = (raw: string) => {
   const url = new URL(raw.includes("://") ? raw : `https://${raw}`);
@@ -96,45 +93,4 @@ export const recipientIdentity = (publicPem: string) => {
     encoded: spki.toString("base64url"),
     fingerprint: createHash("sha256").update(spki).digest("hex"),
   };
-};
-
-/** The browser receives the challenge, never the verifier. */
-export const authorizeDemo = async (origin: string, publicPem: string, note: (message: string) => void, options: AuthorizationOptions = {}) => {
-  const { encoded, fingerprint } = recipientIdentity(publicPem);
-  const verifier = randomBytes(32).toString("hex");
-  const challenge = createHash("sha256").update(verifier).digest("hex");
-  const url = new URL("/authorize", originOf(origin));
-  url.hash = new URLSearchParams({ challenge, recipient: encoded }).toString();
-  note(`authorize this request in your browser:\n${url}`);
-  const deadline = AbortSignal.timeout(Math.min(options.timeoutMs ?? 130_000, 130_000));
-  const attempts = Math.min(options.attempts ?? 60, 60);
-  try {
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
-      const response = await fetch(new URL("/api/demo/status", originOf(origin)), {
-        headers: authHeaders(verifier),
-        redirect: "error",
-        signal: AbortSignal.any([deadline, AbortSignal.timeout(10_000)]),
-      });
-      if (response.status === 429) throw await requestFailure(response, "authorization failed", origin);
-      const body = jsonRecord(await response.json());
-      if (response.status === 200 && body.status === "approved") {
-        if (body.recipientFingerprint !== fingerprint) {
-          throw new Error("authorization recipient fingerprint does not match local key");
-        }
-        if (typeof body.expiresAt !== "number" || !Number.isFinite(body.expiresAt) || body.expiresAt <= 0) {
-          throw new Error("invalid authorization expiry");
-        }
-        return verifier;
-      }
-      if (response.status !== 202 || body.status !== "pending") {
-        throw await requestFailure(response, "authorization failed", origin);
-      }
-      if (attempt + 1 < attempts) {
-        await delay(options.intervalMs ?? 2_000, undefined, { signal: deadline });
-      }
-    }
-  } catch (error) {
-    if (!deadline.aborted) throw error;
-  }
-  throw new Error("timed out waiting for browser authorization");
 };

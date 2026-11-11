@@ -1,6 +1,7 @@
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { init, Message, update, type Model } from "../src/client/app.js";
+import * as Scene from "foldkit/scene";
+import { init, Message, update, view, type Model } from "../src/client/app.js";
 import { openPodaj1 } from "../scripts/open-podaj1.js";
 
 const ID = "a".repeat(32);
@@ -32,8 +33,8 @@ const run = async (result: ReturnType<typeof update>) => {
   if (!command) throw new Error("missing command");
   return Effect.runPromise(command.effect);
 };
-const ready = async (access: "private" | "public" = "private", origin = "") => {
-  const initial = init({ page: "compose", handoffId: ID, writeToken: WRITE, publicKeyPem }, origin);
+const ready = async (access: "private" | "public" = "private", origin = "", requestedKeys: readonly string[] = []) => {
+  const initial = init({ page: "compose", source: { _tag: "Expanded", id: ID, writeToken: WRITE, recipientPublicKey: publicKeyPem, requestedKeys } }, origin);
   fetchMock.mockResolvedValueOnce(Response.json({ access, maxHandoffBytes: 32768, handoffTtlSeconds: 7200 }));
   let model = initial.model;
   for (const command of initial.commands ?? []) model = update(model, await Effect.runPromise(command.effect)).model;
@@ -92,7 +93,7 @@ describe("CLI-created human fill form", () => {
   });
 
   it("requires a complete CLI fill link before loading anything", () => {
-    const initial = init({ page: "compose", handoffId: ID, writeToken: null, publicKeyPem: null });
+    const initial = init({ page: "compose", source: { _tag: "Invalid", id: ID } });
     noCommands(initial);
     noCommands(update(initial.model, Message.ClickedSend()));
     expect(initial.model.status).toMatchObject({ _tag: "Error" });
@@ -101,9 +102,108 @@ describe("CLI-created human fill form", () => {
 
   it.each(["private", "public"] as const)("loads a capability fill form with %s access without an admission handshake", async (access) => {
     const model = await ready(access);
-    expect(model.recipientReady).toBe(true);
-    expect(model.limitsReady).toBe(true);
+    expect(Option.isSome(model.sender)).toBe(true);
     expect(model.sending).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("prefills requested labels with empty hidden values and stable editable rows", async () => {
+    let model = await ready("private", "", ["PASSWORD", "my access token"]);
+    expect(model.rows).toEqual([
+      { id: "1", key: "PASSWORD", value: "", revealed: false },
+      { id: "2", key: "my access token", value: "", revealed: false },
+    ]);
+    expect(model.nextRowId).toBe(3);
+    for (const message of [
+      Message.ChangedRowKey({ rowId: "1", key: "renamed label" }),
+      Message.ChangedRowValue({ rowId: "1", value: VALUE }),
+      Message.ClickedRemoveRow({ rowId: "2" }), Message.ClickedAdd(),
+    ]) {
+      const result = update(model, message);
+      noCommands(result);
+      model = result.model;
+    }
+    expect(model.rows).toEqual([
+      { id: "1", key: "renamed label", value: VALUE, revealed: false },
+      { id: "3", key: "", value: "", revealed: false },
+    ]);
+    expect(model.nextRowId).toBe(4);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("renders untrusted label markup as a plain editable input value", async () => {
+    const key = '<script>alert("x")</script><img src=x onerror=alert(1)>';
+    const model = await ready("private", "", [key]);
+    Scene.scene({ update, view },
+      Scene.given(model),
+      Scene.expect(Scene.label("key")).toHaveValue(key),
+      Scene.expect(Scene.label("key")).toBeEnabled(),
+      Scene.expect(Scene.label("value")).toHaveValue(""),
+      Scene.expect(Scene.selector('input[type="password"]')).toExist(),
+      Scene.expect(Scene.selector("script")).toBeAbsent(),
+      Scene.expect(Scene.selector("img")).toBeAbsent(),
+      Scene.expect(Scene.role("button", { name: "show" })).toBeAbsent(),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("uses a single blank row for legacy links without requested labels", async () => {
+    const model = await ready();
+    expect(model.rows).toEqual([{ id: "1", key: "", value: "", revealed: false }]);
+    expect(model.nextRowId).toBe(2);
+  });
+
+  it("matches pasted names to empty requested rows and encrypts all extra fields only after send", async () => {
+    let model = await ready("private", "", ["PASSWORD", "other label"]);
+    model = update(model, Message.ClickedAdd()).model;
+    const result = update(model, Message.PastedEnv({ text: `EXTRA=unexpected\nother label=another\nPASSWORD=${VALUE}\n` }));
+    noCommands(result);
+    model = result.model;
+    expect(model.rows).toEqual([
+      { id: "1", key: "PASSWORD", value: VALUE, revealed: false },
+      { id: "2", key: "other label", value: "another", revealed: false },
+      { id: "3", key: "EXTRA", value: "unexpected", revealed: false },
+      { id: "4", key: "", value: "", revealed: false },
+    ]);
+    expect(model.nextRowId).toBe(5);
+    expect(fetchMock).not.toHaveBeenCalled();
+    fetchMock.mockResolvedValueOnce(Response.json({ id: ID, expiresAt: Date.now() + 7200000 }));
+    expect((await run(update(model, Message.ClickedSend())))._tag).toBe("SucceededSend");
+    const wire = String(fetchMock.mock.calls[0]?.[1]?.body);
+    expect(wire).not.toContain("PASSWORD");
+    expect(wire).not.toContain("other label");
+    expect(wire).not.toContain("EXTRA");
+    expect(wire).not.toContain(VALUE);
+    expect(JSON.parse(openPodaj1(JSON.parse(wire).sealed, privateKeyPem))).toEqual({ vars: [
+      { key: "PASSWORD", value: VALUE }, { key: "other label", value: "another" }, { key: "EXTRA", value: "unexpected" },
+    ] });
+  });
+
+  it("preserves edited requested rows, value-only partial rows, and conflicting pasted values", async () => {
+    let model = await ready("private", "", ["PASSWORD", "IN_PROGRESS", "OTHER"]);
+    model = update(model, Message.ChangedRowValue({ rowId: "1", value: VALUE })).model;
+    model = update(model, Message.ChangedRowKey({ rowId: "3", key: "" })).model;
+    model = update(model, Message.ChangedRowValue({ rowId: "3", value: "unfinished value" })).model;
+    const before = model.rows;
+    const result = update(model, Message.PastedEnv({ text: "PASSWORD=conflict\nEXTRA=extra\n" }));
+    noCommands(result);
+    expect(result.model.rows.slice(0, 3)).toEqual(before);
+    expect(result.model.rows.slice(3).map(({ key, value }) => ({ key, value }))).toEqual([
+      { key: "PASSWORD", value: "conflict" }, { key: "EXTRA", value: "extra" }, { key: "", value: "" },
+    ]);
+    expect(new Set(result.model.rows.map((row) => row.id)).size).toBe(result.model.rows.length);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves duplicate pasted names for existing duplicate validation", async () => {
+    const model = await ready("private", "", ["PASSWORD"]);
+    const pasted = update(model, Message.PastedEnv({ text: "PASSWORD=\nPASSWORD=second\n" }));
+    noCommands(pasted);
+    expect(pasted.model.rows.filter((row) => row.key === "PASSWORD").map((row) => row.value)).toEqual(["", "second"]);
+    const completed = update(pasted.model, Message.ChangedRowValue({ rowId: "1", value: "first" })).model;
+    const submitted = update(completed, Message.ClickedSend());
+    noCommands(submitted);
+    expect(submitted.model.status).toEqual({ _tag: "Error", text: "Duplicate key: PASSWORD." });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -243,14 +343,14 @@ describe("CLI-created human fill form", () => {
   });
 
   it("also recognizes a demo limit while loading configuration", async () => {
-    const initial = init({ page: "compose", handoffId: ID, writeToken: WRITE, publicKeyPem }, "https://podaj.fyi");
+    const initial = init({ page: "compose", source: { _tag: "Expanded", id: ID, writeToken: WRITE, recipientPublicKey: publicKeyPem, requestedKeys: [] } }, "https://podaj.fyi");
     fetchMock.mockResolvedValueOnce(Response.json({ error: "rate limited" }, { status: 429 }));
     let model = initial.model;
     for (const command of initial.commands ?? []) {
       model = update(model, await Effect.runPromise(command.effect)).model;
     }
     expect(model.status).toMatchObject({ _tag: "RateLimited", text: "Request limit reached.", ownerHelp: "" });
-    expect(model.limitsReady).toBe(false);
+    expect(Option.isNone(model.sender)).toBe(true);
   });
 
   it("does not label unrelated demo failures as quota exhaustion", async () => {
@@ -260,7 +360,8 @@ describe("CLI-created human fill form", () => {
   });
 
   it("does not upload an encrypted bundle over the configured limit", async () => {
-    const model = { ...filled(await ready()), maxHandoffBytes: 1 };
+    const filledModel = filled(await ready());
+    const model = { ...filledModel, sender: Option.map(filledModel.sender, (sender) => ({ ...sender, maxHandoffBytes: 1 })) };
     const submitted = update(model, Message.ClickedSend());
     expect((await run(submitted))._tag).toBe("FailedSend");
     expect(fetchMock).not.toHaveBeenCalled();

@@ -132,10 +132,12 @@ describe("compiled CLI distribution", () => {
       }
       expect(result?.status).toBe(1);
       expect(result?.stdout).toBe("");
-      expect(result?.stderr).toContain("authorize this request in your browser:\nhttps://podaj.fyi/authorize#");
+      expect(result?.stderr).toMatch(/https:\/\/podaj\.fyi\/s\/[a-f0-9]{32}#[A-Za-z0-9_-]{43}/u);
+      expect(result?.stderr).not.toContain("/authorize#");
       expect(result?.stderr).toContain("authorization failed (503)");
       expect(readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line))).toEqual([
         { url: "https://podaj.fyi/api/config", authenticated: false },
+        { url: "https://podaj.fyi/api/contexts", authenticated: false },
         { url: "https://podaj.fyi/api/demo/status", authenticated: true },
       ]);
       expect(existsSync(join(home, "config/podaj/config.json"))).toBe(false);

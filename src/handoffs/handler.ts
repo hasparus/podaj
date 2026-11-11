@@ -6,8 +6,8 @@ import { securityHeaders } from "../security.js";
 import { HandoffsApi, SchemaRefusal } from "./api.js";
 import { HandoffsApiError } from "./errors.js";
 import {
-  approveDemo, consumeHandoff, fillHandoff, getAccess, getConfig, getDemoStatus,
-  handoffStatus, rejectHandoffRead, reserveHandoff,
+  approveDemo, consumeHandoff, createContext, fillHandoff, getAccess, getConfig, getContext, getDemoStatus,
+  handoffStatus, rejectHandoffRead, reserveHandoff, writableHandoff,
 } from "./operations.js";
 import {
   apiErrorResponse, attempt, CapabilityHash, capabilityPolicyLayer,
@@ -47,11 +47,14 @@ const handlers = HttpApiBuilder.group(HandoffsApi, "handoffs", (group) => group
   .handle("access", () => requestOperation(getAccess))
   .handleRaw("approveDemo", () => requestOperation(approveDemo))
   .handle("demoStatus", () => requestOperation(getDemoStatus))
+  .handleRaw("createContext", () => requestOperation(createContext))
+  .handle("getContext", ({ params }) => requestOperation((_request, env) => getContext(env, params.id)))
   .handleRaw("reserve", () => requestOperation(reserveHandoff))
   .handleRaw("fill", ({ params }) => Effect.gen(function* () {
     const writeHash = yield* CapabilityHash;
     return yield* requestOperation((request, env) => fillHandoff(request, env, params.id, writeHash));
   }))
+  .handle("writable", ({ params }) => capabilityOperation(params.id, writableHandoff))
   .handle("status", ({ params }) => capabilityOperation(params.id, handoffStatus))
   .handleRaw("consume", ({ params }) => capabilityOperation(params.id, consumeHandoff))
   .handle("rejectRead", () => Effect.succeed(rejectHandoffRead())),

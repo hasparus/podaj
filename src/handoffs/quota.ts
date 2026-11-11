@@ -1,5 +1,8 @@
 export const QUOTA_KINDS = [
   "api_requests",
+  "context_drafts_daily",
+  "context_drafts_per_ip",
+  "context_drafts_live",
   "live_handoffs",
   "reservations_daily",
   "reservations_per_credential",

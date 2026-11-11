@@ -10,6 +10,8 @@ import {
   type ApproveCredentialReply,
   type AuthorizeWriteReply,
   type ConsumeReply,
+  type CreateContextReply,
+  type GetContextReply,
   type CredentialStatusReply,
   type FailureReply,
   type GoneReply,
@@ -78,6 +80,16 @@ export class HandoffParty extends DurableObject<HandoffPartyEnv> {
     }
   }
 
+  /** Arm before committing: scheduling failure must never hide allocated tokens or charged quota. */
+  private commit<A>(work: () => A): Promise<A> {
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const deadline = Date.now() + this.store.cleanupDelayMs;
+      const current = await this.ctx.storage.getAlarm();
+      if (current === null || current > deadline) await this.ctx.storage.setAlarm(deadline);
+      return work();
+    });
+  }
+
   private async reconcile(): Promise<void> {
     await this.ctx.blockConcurrencyWhile(async () => {
       this.store.cleanup();
@@ -112,23 +124,26 @@ export class HandoffParty extends DurableObject<HandoffPartyEnv> {
     });
   }
 
-  async reserve(input: ReserveInput): Promise<ReserveReply> {
-    const result = this.store.reserve(input);
-    if (result.status === 201) await this.reconcile();
-    return result;
+  createContext(id: string, writeHash: string, encryptedContext: string, ipHash: string): Promise<CreateContextReply> {
+    return this.commit(() => this.store.createContext(id, writeHash, encryptedContext, ipHash));
+  }
+
+  getContext(id: string): Promise<GetContextReply> {
+    return Promise.resolve(this.store.context(id));
+  }
+
+  reserve(input: ReserveInput): Promise<ReserveReply> {
+    return this.commit(() => this.store.reserve(input));
   }
 
   authorizeWrite(id: string, writeHash: string): Promise<AuthorizeWriteReply> {
     return Promise.resolve(this.store.authorizeWrite(id, writeHash));
   }
 
-  async fill(id: string, writeHash: string, sealed: string): Promise<FillReply> {
+  fill(id: string, writeHash: string, sealed: string): Promise<FillReply> {
     const result = this.store.fill(id, writeHash, sealed);
-    if (result.status === 200) {
-      this.notify(id, true);
-      await this.reconcile();
-    }
-    return result;
+    if (result.status === 200) this.notify(id, true);
+    return Promise.resolve(result);
   }
 
   consume(id: string, readHash: string): Promise<ConsumeReply> {
@@ -141,16 +156,12 @@ export class HandoffParty extends DurableObject<HandoffPartyEnv> {
     return Promise.resolve(this.store.status(id, subscribeHash));
   }
 
-  async approvalAttempt(ipHash: string): Promise<ApprovalAttemptReply> {
-    const result = this.store.approvalAttempt(ipHash);
-    if (result.status === 200) await this.reconcile();
-    return result;
+  approvalAttempt(ipHash: string): Promise<ApprovalAttemptReply> {
+    return this.commit(() => this.store.approvalAttempt(ipHash));
   }
 
-  async approveCredential(challenge: string, fingerprint: string): Promise<ApproveCredentialReply> {
-    const result = this.store.approveCredential(challenge, fingerprint);
-    if (result.status === 200) await this.reconcile();
-    return result;
+  approveCredential(challenge: string, fingerprint: string): Promise<ApproveCredentialReply> {
+    return this.commit(() => this.store.approveCredential(challenge, fingerprint));
   }
 
   credentialStatus(challenge: string): Promise<CredentialStatusReply> {

@@ -3,11 +3,13 @@ import { Runtime, type Update } from "foldkit";
 import { define as DefineCommand } from "foldkit/command";
 import { Document, HtmlBuilder, type Html } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
-import { publicKeyFingerprint, seal, validateRecipientPublicKey, type HandoffVariables } from "../crypto/podaj1.js";
+import { seal, type HandoffVariables } from "../crypto/podaj1.js";
+import { prepareCompose, Sender } from "./compose.js";
+import { responseJson } from "./http.js";
 import { eyeOffPaths, eyePaths, trashPaths } from "./icons.js";
 import { looksLikeEnvPaste, parseEnvText } from "./parse-env.js";
-import type { AppRoute } from "./parse-route.js";
-import { causeMessage, handoffApiError, HandoffApiError, HOSTED_DEMO_ORIGIN, HOW_IT_WORKS, SELF_HOST_URL, statusError } from "./user-facing.js";
+import { ComposeSource, type AppRoute } from "./parse-route.js";
+import { causeMessage, HandoffApiError, HOSTED_DEMO_ORIGIN, HOW_IT_WORKS, SELF_HOST_URL, statusError } from "./user-facing.js";
 
 const START_COMMAND = "podaj wait API_KEY";
 
@@ -18,19 +20,11 @@ const Status = Schema.Union([
   Schema.Struct({ _tag: Schema.Literal("Error"), text: Schema.String }),
   Schema.Struct({ _tag: Schema.Literal("RateLimited"), text: Schema.String, ownerHelp: Schema.String }),
 ]);
-const Limits = Schema.Struct({ maxHandoffBytes: Schema.Number });
-const Sent = Schema.Struct({ id: Schema.String, expiresAt: Schema.Number });
 
 export const ModelSchema = Schema.Struct({
   page: Schema.Literals(["landing", "compose"]),
   hostedDemo: Schema.Boolean,
-  handoffId: Schema.Option(Schema.String),
-  writeToken: Schema.Option(Schema.String),
-  publicKeyPem: Schema.Option(Schema.String),
-  fingerprint: Schema.Option(Schema.String),
-  recipientReady: Schema.Boolean,
-  limitsReady: Schema.Boolean,
-  maxHandoffBytes: Schema.Number,
+  sender: Schema.Option(Sender),
   nextRowId: Schema.Number,
   rows: Schema.Array(Row),
   sending: Schema.Boolean,
@@ -50,8 +44,8 @@ export const Message = defineMessageUnion({
   ClickedCopyCommand: {},
   SucceededCopyCommand: {},
   FailedCopyCommand: {},
-  SucceededRecipient: { fingerprint: Schema.String },
-  SucceededLimits: { maxHandoffBytes: Schema.Number },
+  PreparedCompose: { sender: Sender, requestedKeys: Schema.Array(Schema.String) },
+  OpenedVerification: {},
   FailedLoad: { text: Schema.String },
   SucceededSend: {},
   FailedSend: { text: Schema.String },
@@ -78,14 +72,6 @@ const toPayload = (rows: ReadonlyArray<typeof Row.Type>): HandoffVariables => {
   return { vars };
 };
 
-const responseJson = async (response: Response): Promise<unknown> => {
-  const data: unknown = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw handoffApiError(response.status, data);
-  }
-  return data;
-};
-
 const CopyCommand = DefineCommand("CopyCommand", {
   messages: [Message.SucceededCopyCommand, Message.FailedCopyCommand],
   execute: Effect.tryPromise({
@@ -97,29 +83,17 @@ const CopyCommand = DefineCommand("CopyCommand", {
   })),
 });
 
-const LoadRecipient = DefineCommand("LoadRecipient", {
-  args: { publicKeyPem: Schema.String },
-  messages: [Message.SucceededRecipient, Message.FailedLoad],
-  execute: ({ publicKeyPem }) => Effect.tryPromise({
+const PrepareCompose = DefineCommand("PrepareCompose", {
+  args: { source: ComposeSource },
+  messages: [Message.PreparedCompose, Message.OpenedVerification, Message.FailedLoad, Message.ReachedRateLimit],
+  execute: ({ source }) => Effect.tryPromise({
     try: async () => {
-      await validateRecipientPublicKey(publicKeyPem);
-      return Message.SucceededRecipient({ fingerprint: await publicKeyFingerprint(publicKeyPem) });
-    },
-    catch: () => new Error("This fill link has an invalid recipient key. Ask for a new link."),
-  }).pipe(Effect.catch((error) => Effect.succeed(Message.FailedLoad({ text: causeMessage(error) })))),
-});
-
-const LoadLimits = DefineCommand("LoadLimits", {
-  messages: [Message.SucceededLimits, Message.FailedLoad, Message.ReachedRateLimit],
-  execute: Effect.tryPromise({
-    try: async () => {
-      const data = Schema.decodeUnknownSync(Limits)(await responseJson(await fetch("/api/config", {
-        cache: "no-store", signal: AbortSignal.timeout(10_000),
-      })));
-      if (!Number.isInteger(data.maxHandoffBytes) || data.maxHandoffBytes <= 0 || data.maxHandoffBytes > 1_048_576) {
-        throw new Error("This instance has invalid limits.");
+      const prepared = await prepareCompose(source);
+      if (prepared._tag === "Verify") {
+        globalThis.location.replace(prepared.url);
+        return Message.OpenedVerification();
       }
-      return Message.SucceededLimits(data);
+      return Message.PreparedCompose({ sender: prepared.sender, requestedKeys: prepared.requestedKeys });
     },
     catch: (error) => error,
   }).pipe(Effect.catch((error) => Effect.succeed(error instanceof HandoffApiError && error.status === 429
@@ -143,8 +117,12 @@ const SendHandoff = DefineCommand("SendHandoff", {
         body: JSON.stringify({ sealed }),
         redirect: "error", signal: AbortSignal.timeout(10_000),
       });
-      const data = Schema.decodeUnknownSync(Sent)(await responseJson(response));
-      if (data.id !== handoffId || !Number.isFinite(data.expiresAt)) { throw new Error("Couldn't confirm this handoff was sent."); }
+      const failure = "Couldn't confirm this handoff was sent.";
+      const data = await responseJson(response, failure);
+      if (typeof data !== "object" || data === null || !("id" in data) || data.id !== handoffId
+        || !("expiresAt" in data) || typeof data.expiresAt !== "number" || !Number.isFinite(data.expiresAt)) {
+        throw new Error(failure);
+      }
       return Message.SucceededSend();
     },
     catch: (error) => error,
@@ -155,19 +133,14 @@ const SendHandoff = DefineCommand("SendHandoff", {
 
 export const init = (route: AppRoute, origin = ""): ReturnType<Runtime.ApplicationInit<Model, typeof Message.Type>> => {
   const model: Model = {
-    page: route.page,
-    hostedDemo: origin === HOSTED_DEMO_ORIGIN,
-    handoffId: route.page === "compose" ? Option.some(route.handoffId) : Option.none(),
-    writeToken: route.page === "compose" ? Option.fromNullishOr(route.writeToken) : Option.none(),
-    publicKeyPem: route.page === "compose" ? Option.fromNullishOr(route.publicKeyPem) : Option.none(),
-    fingerprint: Option.none(), recipientReady: false, limitsReady: false, maxHandoffBytes: 32_768,
+    page: route.page, hostedDemo: origin === HOSTED_DEMO_ORIGIN, sender: Option.none(),
     nextRowId: 2, rows: [newRow(1)], sending: false, sent: false, status: hiddenStatus(),
   };
   if (route.page === "landing") { return { model }; }
-  if (route.writeToken === null || route.publicKeyPem === null) {
+  if (route.source._tag === "Invalid") {
     return { model: { ...model, status: statusError("This fill link is incomplete. Ask for a new link from the CLI.") } };
   }
-  return { model, commands: [LoadRecipient({ publicKeyPem: route.publicKeyPem }), LoadLimits()] };
+  return { model, commands: [PrepareCompose({ source: route.source })] };
 };
 
 export const update = (model: Model, message: Message) => Message.match<Update.Return<Model, Message>>(message, {
@@ -184,15 +157,24 @@ export const update = (model: Model, message: Message) => Message.match<Update.R
     if (locked(model)) { return { model }; }
     const vars = parseEnvText(text);
     if (vars.length === 0) { return { model: { ...model, status: statusError("Couldn't read pasted text as KEY=value lines.") } }; }
+    const matched = new Set<number>();
+    const matchedRows = model.rows.map((row) => {
+      if (row.key.trim().length === 0 || row.value.length > 0) { return row; }
+      const index = vars.findIndex((entry, entryIndex) => !matched.has(entryIndex) && entry.key === row.key.trim());
+      if (index === -1) { return row; }
+      matched.add(index);
+      return { ...row, value: vars[index].value, revealed: false };
+    });
+    const remaining = vars.filter((_, index) => !matched.has(index));
     let pasted = 0;
     let nextRowId = model.nextRowId;
-    const rows = model.rows.map((row) => {
-      if (row.key.length > 0 || row.value.length > 0 || pasted >= vars.length) { return row; }
-      const entry = vars[pasted];
+    const rows = matchedRows.map((row) => {
+      if (row.key.length > 0 || row.value.length > 0 || pasted >= remaining.length) { return row; }
+      const entry = remaining[pasted];
       pasted += 1;
       return { ...row, ...entry, revealed: false };
     });
-    for (const entry of vars.slice(pasted)) {
+    for (const entry of remaining.slice(pasted)) {
       rows.push({ ...entry, id: String(nextRowId), revealed: false });
       nextRowId += 1;
     }
@@ -204,19 +186,19 @@ export const update = (model: Model, message: Message) => Message.match<Update.R
     return { model: { ...model, rows, nextRowId, status: hiddenStatus() } };
   },
   ClickedSend: () => {
-    if (model.page !== "compose" || locked(model) || !model.recipientReady || !model.limitsReady) { return { model }; }
-    const handoffId = Option.getOrNull(model.handoffId);
-    const writeToken = Option.getOrNull(model.writeToken);
-    const publicKeyPem = Option.getOrNull(model.publicKeyPem);
-    if (handoffId === null || writeToken === null || publicKeyPem === null) { return { model }; }
+    if (model.page !== "compose" || locked(model) || Option.isNone(model.sender)) { return { model }; }
     try { toPayload(model.rows); } catch (error) { return { model: { ...model, status: statusError(causeMessage(error)) } }; }
     return {
       model: { ...model, sending: true, status: hiddenStatus() },
-      commands: [SendHandoff({ handoffId, writeToken, publicKeyPem, rows: model.rows, maxHandoffBytes: model.maxHandoffBytes })],
+      commands: [SendHandoff({ ...model.sender.value, rows: model.rows })],
     };
   },
-  SucceededRecipient: ({ fingerprint }) => ({ model: { ...model, fingerprint: Option.some(fingerprint), recipientReady: true } }),
-  SucceededLimits: ({ maxHandoffBytes }) => ({ model: { ...model, maxHandoffBytes, limitsReady: true } }),
+  PreparedCompose: ({ sender, requestedKeys }) => {
+    const rows = requestedKeys.length > 0
+      ? requestedKeys.map((key, index) => ({ ...newRow(index + 1), key })) : [newRow(1)];
+    return { model: { ...model, sender: Option.some(sender), rows, nextRowId: rows.length + 1 } };
+  },
+  OpenedVerification: () => ({ model }),
   FailedLoad: ({ text }) => ({ model: { ...model, status: statusError(text) } }),
   FailedSend: ({ text }) => ({ model: { ...model, sending: false, status: statusError(text) } }),
   ReachedRateLimit: ({ text, ownerHelp }) => ({ model: { ...model, sending: false, status: { _tag: "RateLimited", text, ownerHelp } } }),
@@ -246,7 +228,7 @@ const statusView = (model: Model, h: HtmlBuilder<Message>): Html => {
 };
 
 const fillView = (model: Model, h: HtmlBuilder<Message>): Html => {
-  if (!model.recipientReady || !model.limitsReady) {
+  if (Option.isNone(model.sender)) {
     return h.main([h.Class("main container")], [statusView(model, h), ...(model.status._tag === "Hidden" ? [h.p([h.Class("compose-hint")], ["Loading request…"])] : [])]);
   }
   const onPaste = h.OnPastePreventDefault((text) => looksLikeEnvPaste(text) ? Option.some(Message.PastedEnv({ text })) : Option.none());
@@ -275,8 +257,8 @@ const fillView = (model: Model, h: HtmlBuilder<Message>): Html => {
 export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
   title: "podaj",
   body: h.div([h.Class("shell")], [
-    h.header([h.Class("site-header")], [h.span([h.Class("brand")], ["podaj"]), ...Option.match(model.fingerprint, {
-      onNone: () => [], onSome: (fingerprint) => [h.span([h.Class("key-meta")], [fingerprint.slice(0, 16)])],
+    h.header([h.Class("site-header")], [h.span([h.Class("brand")], ["podaj"]), ...Option.match(model.sender, {
+      onNone: () => [], onSome: ({ fingerprint }) => [h.span([h.Class("key-meta")], [fingerprint.slice(0, 16)])],
     })]),
     model.page === "compose" ? fillView(model, h) : h.main([h.Class("main container")], [
       h.p([h.Class("compose-hint")], ["Open the fill link from your CLI."]),

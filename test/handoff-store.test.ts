@@ -24,6 +24,7 @@ const HOUR = 3_600_000;
 const hex = (value: number, length = 64): string => value.toString(16).padStart(length, "0");
 const fingerprint = hex(10);
 const input = (value = 1, creatorHash: string | null = null): ReserveInput => ({
+  source: "generated",
   id: hex(value, 32),
   recipientFingerprint: fingerprint,
   writeHash: hex(100),
@@ -56,7 +57,7 @@ const socketFor = (id: string, expiresAt: number) => {
   };
 };
 
-const partySetup = () => {
+const partySetup = (config: HandoffStoreConfig = {}) => {
   const { database, storage, statements } = sqliteStorage();
   databases.push(database);
   let alarm: number | null = null;
@@ -72,7 +73,7 @@ const partySetup = () => {
     getWebSockets: vi.fn((id?: string) => sockets.filter((socket) => id === undefined || socket.deserializeAttachment().id === id)),
     blockConcurrencyWhile: vi.fn(async (work: () => Promise<unknown>) => await work()),
   };
-  const env = { HANDOFF_PARTY: { idFromName: () => "fixed-object" } };
+  const env = { ...config, HANDOFF_PARTY: { idFromName: () => "fixed-object" } };
   const party = new HandoffParty(
     ctx as unknown as DurableObjectState,
     env as unknown as ConstructorParameters<typeof HandoffParty>[1],
@@ -90,7 +91,7 @@ describe("typed handoff contracts", () => {
     expectTypeOf<HandoffStore["approvalAttempt"]>().returns.toEqualTypeOf<ApprovalAttemptReply>();
     expectTypeOf<HandoffStore["approveCredential"]>().returns.toEqualTypeOf<ApproveCredentialReply>();
     expectTypeOf<HandoffStore["credentialStatus"]>().returns.toEqualTypeOf<CredentialStatusReply>();
-    expectTypeOf<ReserveReply["status"]>().toEqualTypeOf<201 | 400 | 401 | 409 | 429>();
+    expectTypeOf<ReserveReply["status"]>().toEqualTypeOf<201 | 400 | 401 | 409 | 410 | 429>();
     expectTypeOf<ConsumeReply["status"]>().toEqualTypeOf<200 | 401 | 404 | 410>();
     expectTypeOf<Extract<ConsumeReply, { status: 200 }>["body"]["sealed"]>().toEqualTypeOf<string>();
     expectTypeOf<{ status: 200; body: { sealed: null; recipientFingerprint: string } }>().not.toExtend<ConsumeReply>();
@@ -148,6 +149,15 @@ describe("read-only RPCs and delivery maintenance", () => {
     expect(database.prepare("SELECT COUNT(*) AS count FROM handoffs").get()?.count).toBe(1);
   });
 
+  it.each([["60", 60_000], ["7200", 180_000]] as const)("pre-arms a conservative cleanup deadline from validated %s-second retention", async (ttl, delay) => {
+    const now = Date.UTC(2026, 10, 1);
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const { party, alarm, ctx } = partySetup({ HANDOFF_TTL_SECONDS: ttl });
+    expect((await party.reserve(input())).status).toBe(201);
+    expect(alarm()).toBe(now + delay);
+    expect(ctx.getWebSockets).not.toHaveBeenCalled();
+  });
+
   it("reconciles each subscribed slot once using only expiry metadata", async () => {
     const { party, statements, sockets, alarm } = partySetup();
     await party.reserve(input());
@@ -192,17 +202,68 @@ describe("read-only RPCs and delivery maintenance", () => {
     expect(statements.map(({ query }) => query)).toEqual([
       "SELECT read_hash, fingerprint, state, sealed, expires_at FROM handoffs WHERE id = ?",
       "UPDATE handoffs SET state = 'consumed', sealed = NULL WHERE id = ?",
+      "DELETE FROM contexts WHERE id = ?",
     ]);
     expect(database.prepare("SELECT state, sealed FROM handoffs").get()).toEqual({ state: "consumed", sealed: null });
     expect((await party.consume(slot.id, slot.readHash)).status).toBe(410);
     await expect(party.alarm()).rejects.toThrow("alarm storage unavailable");
   });
 
-  it("does not suppress critical alarm scheduling failures during reservation", async () => {
-    const { party, ctx } = partySetup();
-    ctx.storage.setAlarm.mockRejectedValue(new Error("cannot arm cleanup"));
+  it.each(["getAlarm", "setAlarm"] as const)("fails %s before reservation, approval or attempt allocation", async (method) => {
+    const { party, ctx, database } = partySetup();
+    ctx.storage[method].mockRejectedValue(new Error("cannot arm cleanup"));
     await expect(party.reserve(input())).rejects.toThrow("cannot arm cleanup");
-    expect(ctx.storage.setAlarm).toHaveBeenCalled();
+    await expect(party.approvalAttempt(hex(500))).rejects.toThrow("cannot arm cleanup");
+    await expect(party.approveCredential(hex(501), fingerprint)).rejects.toThrow("cannot arm cleanup");
+    for (const table of ["handoffs", "credentials", "counters"]) {
+      expect(database.prepare(`SELECT * FROM ${table}`).all()).toEqual([]);
+    }
+    expect(ctx.getWebSockets).not.toHaveBeenCalled();
+  });
+
+  it("returns no allocation on HTTP scheduling failure, then returns all capabilities on retry", async () => {
+    const { party, ctx, database } = partySetup();
+    const keys = await crypto.subtle.generateKey({
+      name: "RSA-OAEP", hash: "SHA-256", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]),
+    }, true, ["encrypt", "decrypt"]);
+    const bytes = new Uint8Array(await crypto.subtle.exportKey("spki", keys.publicKey));
+    const recipientPublicKey = `-----BEGIN PUBLIC KEY-----\n${btoa(String.fromCharCode(...bytes))}\n-----END PUBLIC KEY-----`;
+    const env = {
+      PODAJ_API_AUTH_SECRET: "owner", HANDOFF_PARTY: { idFromName: () => "fixed-object", get: () => party },
+    } as unknown as Env;
+    const reserve = () => Effect.runPromise(handleHandoffsApi(new Request("https://podaj.test/api/handoffs/reserve", {
+      method: "POST", headers: { Authorization: "Bearer owner", "Content-Type": "application/json" },
+      body: JSON.stringify({ recipientPublicKey }),
+    }), env));
+    ctx.storage.setAlarm.mockRejectedValueOnce(new Error("cannot arm cleanup"));
+    expect((await reserve()).status).toBe(503);
+    expect(database.prepare("SELECT * FROM handoffs").all()).toEqual([]);
+    expect(database.prepare("SELECT * FROM counters").all()).toEqual([]);
+    const response = await reserve();
+    expect(response.status).toBe(201);
+    const receipt = await response.json() as { id: string; writeToken: string; readToken: string; subscribeToken: string };
+    expect(new Set([receipt.writeToken, receipt.readToken, receipt.subscribeToken]).size).toBe(3);
+    expect(database.prepare("SELECT write_hash, read_hash, subscribe_hash FROM handoffs WHERE id = ?").get(receipt.id)).toEqual({
+      write_hash: await digest(receipt.writeToken), read_hash: await digest(receipt.readToken), subscribe_hash: await digest(receipt.subscribeToken),
+    });
+  });
+
+  it("acknowledges fill and notifies ready using the earlier alarm despite alarm storage failure", async () => {
+    const { party, ctx, database, sockets, alarm } = partySetup();
+    await party.reserve(input());
+    const armed = alarm();
+    const socket = socketFor(input().id, Date.now() + 600_000);
+    sockets.push(socket);
+    ctx.storage.getAlarm.mockRejectedValue(new Error("alarm storage unavailable"));
+    ctx.storage.getAlarm.mockClear();
+    ctx.blockConcurrencyWhile.mockClear();
+    expect((await party.fill(input().id, input().writeHash, ciphertext)).status).toBe(200);
+    expect(database.prepare("SELECT state, sealed FROM handoffs").get()).toEqual({ state: "ready", sealed: ciphertext });
+    expect(socket.send).toHaveBeenCalledWith(JSON.stringify({ type: "ready" }));
+    expect(alarm()).toBe(armed);
+    expect(ctx.storage.getAlarm).not.toHaveBeenCalled();
+    expect(ctx.blockConcurrencyWhile).not.toHaveBeenCalled();
+    expect((await party.fill(input().id, input().writeHash, ciphertext)).status).toBe(409);
   });
 
   it("cleans consumed tombstones on the already armed expiry alarm", async () => {
@@ -212,9 +273,14 @@ describe("read-only RPCs and delivery maintenance", () => {
     await party.reserve(input());
     await party.fill(input().id, input().writeHash, ciphertext);
     await party.consume(input().id, input().readHash);
-    const armed = alarm();
-    assert(armed !== null);
-    now = armed;
+    const conservative = alarm();
+    assert(conservative !== null);
+    now = conservative;
+    await party.alarm();
+    expect(database.prepare("SELECT * FROM handoffs").all()).toHaveLength(1);
+    const expiry = alarm();
+    assert(expiry !== null && expiry > conservative);
+    now = expiry;
     await party.alarm();
     expect(database.prepare("SELECT * FROM handoffs").all()).toEqual([]);
     expect((await party.status(input().id, input().subscribeHash)).status).toBe(410);
@@ -222,6 +288,15 @@ describe("read-only RPCs and delivery maintenance", () => {
 });
 
 describe("SQLite handoff state machine", () => {
+  it("rejects absent or unknown reservation sources rather than defaulting to generated", () => {
+    const { store, counts, database } = setup();
+    for (const source of [undefined, "legacy", null]) {
+      expect(store.reserve({ ...input(), source } as unknown as ReserveInput).status).toBe(400);
+    }
+    expect(counts()).toEqual([]);
+    expect(database.prepare("SELECT * FROM handoffs").all()).toEqual([]);
+  });
+
   it("authorizes only the pending slot's write hash without mutating rows, expiry, or quotas", () => {
     const { store, database, counts, advance } = setup();
     store.reserve(input());
@@ -332,6 +407,17 @@ describe("SQLite handoff state machine", () => {
     expect(store.status(input().id, input().subscribeHash).status).toBe(410);
     store.cleanup();
     expect(store.fill(input().id, input().writeHash, ciphertext).status).toBe(410);
+  });
+
+  it("never shortens an existing deadline when filling after a retention configuration change", () => {
+    const { store, storage, advance, now } = setup({ HANDOFF_TTL_SECONDS: "7200" });
+    const reserved = store.reserve(input());
+    assert(reserved.status === 201);
+    advance(1000);
+    const reconfigured = new HandoffStore(storage, { HANDOFF_TTL_SECONDS: "60" }, now);
+    const filled = reconfigured.fill(input().id, input().writeHash, ciphertext);
+    assert(filled.status === 200);
+    expect(filled.body.expiresAt).toBe(reserved.body.expiresAt);
   });
 
   it("expires an unfilled reservation and a consumed tombstone at their deadlines", () => {

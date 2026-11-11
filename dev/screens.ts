@@ -39,16 +39,16 @@ export const isScreenId = (value: string | null): value is ScreenId =>
   SCREENS.some((screen) => screen.id === value);
 
 const pending = (): Model => init({
-  handoffId: "0".repeat(32),
-  page: "compose",
-  publicKeyPem: "canvas-only: never execute transport commands",
-  writeToken: "0".repeat(64),
+  page: "compose", source: { _tag: "Encrypted", id: "0".repeat(32), key: "canvas-only" },
 }).model;
 
-const ready = (): Model => {
-  const recipient = update(pending(), Message.SucceededRecipient({ fingerprint: "71a8d4e2c9f036b5".repeat(4) })).model;
-  return update(recipient, Message.SucceededLimits({ maxHandoffBytes: 32_768 })).model;
-};
+const ready = (): Model => update(pending(), Message.PreparedCompose({
+  requestedKeys: [],
+  sender: {
+    fingerprint: "71a8d4e2c9f036b5".repeat(4), handoffId: "0".repeat(32), maxHandoffBytes: 32_768,
+    publicKeyPem: "canvas-only: never execute transport commands", writeToken: "0".repeat(64),
+  },
+})).model;
 
 const filled = (): Model => update(ready(), Message.PastedEnv({
   text: "DATABASE_URL=postgresql://demo:demo@localhost/example\nOPENAI_API_KEY=demo-only-not-a-real-key",
@@ -67,7 +67,7 @@ const APP_MODELS: Record<AppScreenId, () => Model> = {
   },
   "landing": () => init({ page: "landing" }).model,
   "link-expired": () => update(filled(), Message.FailedSend({ text: apiHandoffErrorText("gone", 410) })).model,
-  "link-incomplete": () => init({ handoffId: "0".repeat(32), page: "compose", publicKeyPem: null, writeToken: null }).model,
+  "link-incomplete": () => init({ page: "compose", source: { _tag: "Invalid", id: "0".repeat(32) } }).model,
   "recipient-invalid": () => update(pending(), Message.FailedLoad({ text: "This fill link has an invalid recipient key. Ask for a new link." })).model,
   "send-limited": () => update(filled(), Message.ReachedRateLimit(quotaExplanation({ kind: "live_handoffs", limit: 200 }))).model,
   "send-unavailable": () => update(filled(), Message.FailedSend({ text: apiHandoffErrorText(undefined, 503) })).model,

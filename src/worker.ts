@@ -44,7 +44,8 @@ export default {
     if (url.pathname === "/parties" || url.pathname.startsWith("/parties/")) return websocket(request, env);
     if (request.method !== "GET" && request.method !== "HEAD") return jsonResponse({ error: "not found" }, 404);
 
-    const authorize = ["/authorize", "/authorize/", "/authorize.html"].includes(url.pathname);
+    const authorize = ["/authorize", "/authorize/", "/authorize.html"].includes(url.pathname)
+      || /^\/authorize\/[a-f0-9]{32}$/u.test(url.pathname);
     const document = url.pathname === "/" || /^\/s\/[a-f0-9]{32}$/u.test(url.pathname);
     if (authorize || document) {
       const assetUrl = new URL(request.url);

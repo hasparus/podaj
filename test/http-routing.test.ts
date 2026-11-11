@@ -190,6 +190,7 @@ describe("declarative HTTP routing", () => {
       try {
         const hashes = await Promise.all([token, readToken, subscribeToken, otherWriteToken].map(digest));
         const slot = {
+          source: "generated" as const,
           id, recipientFingerprint: fingerprint, writeHash: hashes[0], readHash: hashes[1],
           subscribeHash: hashes[2], creatorHash: null,
         };
@@ -241,6 +242,7 @@ describe("declarative HTTP routing", () => {
     const writeHash = await digest(token);
     try {
       store.reserve({
+        source: "generated",
         id, recipientFingerprint: fingerprint, writeHash, readHash: "c".repeat(64),
         subscribeHash: "d".repeat(64), creatorHash: null,
       });
@@ -455,10 +457,23 @@ describe("declarative HTTP routing", () => {
     const reservation = await response.json() as Reservation;
     expect(new Set([reservation.writeToken, reservation.readToken, reservation.subscribeToken]).size).toBe(3);
     expect(service.reserve).toHaveBeenCalledWith(expect.objectContaining({
-      recipientFingerprint: await recipientFingerprint(recipientPublicKey), creatorHash: null,
+      source: "generated", recipientFingerprint: await recipientFingerprint(recipientPublicKey), creatorHash: null,
       writeHash: await digest(reservation.writeToken), readHash: await digest(reservation.readToken),
       subscribeHash: await digest(reservation.subscribeToken),
     }));
+  });
+
+  it("normalizes caller-supplied addresses to draft activation and preserves missing-draft refusal", async () => {
+    const { request, service } = setup();
+    service.reserve.mockResolvedValueOnce({ status: 410, body: { status: "gone" } });
+    const recipientPublicKey = await recipientKey();
+    const response = await request("/api/handoffs/reserve", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer owner" },
+      body: JSON.stringify({ recipientPublicKey, id, writeToken: token }),
+    });
+    expect(response.status).toBe(410);
+    expect(await response.json()).toEqual({ status: "gone" });
+    expect(service.reserve).toHaveBeenCalledWith(expect.objectContaining({ source: "draft", id, writeHash: await digest(token) }));
   });
 
   it("binds Turnstile proof to both the challenge and recipient fingerprint", async () => {

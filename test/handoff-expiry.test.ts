@@ -10,6 +10,7 @@ const ttlCases = [
   [" 3600", 7200], ["3600\n", 7200], ["60", 60], ["3600", 3600], ["7200", 7200], ["86400", 86400],
 ] as const;
 const input = {
+  source: "generated" as const,
   id: "1".repeat(32), recipientFingerprint: "a".repeat(64), writeHash: "b".repeat(64),
   readHash: "c".repeat(64), subscribeHash: "d".repeat(64), creatorHash: null,
 };

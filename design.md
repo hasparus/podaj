@@ -4,7 +4,7 @@ podaj is one dense column. one recipient key in the header. no environments list
 
 ## copy
 
-Brand, headings, and short action labels stay lowercase: podaj, key, value, add, send. Body and status copy use normal sentence case: “Loading request…”, “Sent.”, and “Verified. Return to your CLI.”
+Brand, headings, and short action labels stay lowercase: podaj, key, value, add, send. Body and status copy use normal sentence case: “Loading request…”, “Sent.”, and “Verified. Opening your request…”
 
 the CLI creates the request link. the human browser only fills it and sends. no browser recipient creation, key generation, private-key picker, or decryption view.
 

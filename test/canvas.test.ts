@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ModelSchema, Message } from "../src/client/app.js";
 import { AUTHORIZATION_STATUS } from "../src/client/user-facing.js";
@@ -27,8 +27,9 @@ describe("development screen canvas", () => {
   });
 
   it("keeps the loading, editing, sending and cleared success views distinct", () => {
-    expect(screenModel("fill-loading")).toMatchObject({ recipientReady: false, limitsReady: false });
-    expect(screenModel("fill-empty")).toMatchObject({ recipientReady: true, limitsReady: true, rows: [{ key: "", value: "" }] });
+    expect(Option.isNone(screenModel("fill-loading").sender)).toBe(true);
+    expect(Option.isSome(screenModel("fill-empty").sender)).toBe(true);
+    expect(screenModel("fill-empty").rows).toMatchObject([{ key: "", value: "" }]);
     expect(screenModel("fill-editing").rows.filter((row) => row.value)).toHaveLength(2);
     expect(screenModel("fill-sending")).toMatchObject({ sending: true, sent: false });
     const sent = screenModel("fill-sent");
@@ -62,7 +63,7 @@ describe("development screen canvas", () => {
       loading: "Loading verification…",
       waiting: "Complete verification to continue.",
       checking: "Checking verification…",
-      verified: "Verified. Return to your CLI.",
+      verified: "Verified. Opening your request…",
       failed: "Verification failed. Check your connection and reload this page.",
       expired: "Verification expired. Reload this page to try again.",
     });

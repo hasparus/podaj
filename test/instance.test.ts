@@ -1,7 +1,7 @@
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { authorizeDemo, instanceConfig, originOf, probeInstance, recipientIdentity, requestFailure, tokenVerdict } from "../scripts/instance.js";
+import { instanceConfig, originOf, probeInstance, recipientIdentity, requestFailure, tokenVerdict } from "../scripts/instance.js";
 import { HOSTED_DEMO_ORIGIN, SELF_HOST_URL } from "../src/client/user-facing.js";
 
 const pair = generateKeyPairSync("rsa", {
@@ -9,8 +9,15 @@ const pair = generateKeyPairSync("rsa", {
   publicKeyEncoding: { type: "spki", format: "pem" },
   privateKeyEncoding: { type: "pkcs8", format: "pem" },
 });
-const fingerprint = recipientIdentity(pair.publicKey).fingerprint;
 afterEach(() => vi.unstubAllGlobals());
+
+it("derives the full fingerprint from the local RSA SPKI", () => {
+  const spki = Buffer.from(pair.publicKey.split("\n").slice(1, -2).join(""), "base64");
+  expect(recipientIdentity(pair.publicKey)).toEqual({
+    encoded: spki.toString("base64url"),
+    fingerprint: createHash("sha256").update(spki).digest("hex"),
+  });
+});
 
 it("probes access, not a random handoff, with bounded nonredirecting requests", async () => {
   const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
@@ -98,81 +105,6 @@ describe("CLI rate-limit diagnostics", () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ quota: { kind: "live_handoffs", limit: 29 } }, { status: 429 })));
     await expect(instanceConfig("https://private.example")).rejects.toThrow("configuration unavailable (429): Active handoff limit reached (29)");
     await expect(probeInstance("https://private.example", "synthetic-secret")).rejects.toThrow("access check failed (429): Active handoff limit reached (29)");
-  });
-
-  it("reports authorization quota details even when its error body is not a record", async () => {
-    const response = new Response("synthetic-secret", { status: 429 });
-    const json = vi.spyOn(response, "json");
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
-    await expect(authorizeDemo("https://private.example", pair.publicKey, () => undefined)).rejects.toThrow("authorization failed (429): Request limit reached.");
-    expect(json).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("proof-bound public authorization", () => {
-  it("shows only the challenge and own SPKI, polls using verifier, and verifies full fingerprint", async () => {
-    let link = "";
-    let verifier = "";
-    const fetcher = vi.fn(async (_url: URL, init: RequestInit) => {
-      verifier = new Headers(init.headers).get("Authorization")!.slice(7);
-      expect(verifier).toMatch(/^[a-f0-9]{64}$/u);
-      const hash = new URLSearchParams(new URL(link.split("\n")[1]!).hash.slice(1));
-      expect(hash.get("challenge")).toBe(createHash("sha256").update(verifier).digest("hex"));
-      expect(hash.get("recipient")).toBe(recipientIdentity(pair.publicKey).encoded);
-      expect(link).not.toContain(verifier);
-      expect(link).not.toContain("PRIVATE");
-      expect(String(_url)).toBe("http://localhost:8787/api/demo/status");
-      expect(init.redirect).toBe("error");
-      return Response.json({ status: "approved", expiresAt: Date.now() + 60_000, recipientFingerprint: fingerprint });
-    });
-    vi.stubGlobal("fetch", fetcher);
-    expect(await authorizeDemo("http://localhost:8787", pair.publicKey, (message) => { link = message; })).toBe(verifier);
-    expect(fetcher).toHaveBeenCalledTimes(1);
-  });
-
-  it("rejects a different key even if its short fingerprint prefix matches", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
-      status: "approved", expiresAt: Date.now() + 60_000,
-      recipientFingerprint: `${fingerprint.slice(0, 12)}${"0".repeat(52)}`,
-    })));
-    await expect(authorizeDemo("http://localhost:8787", pair.publicKey, () => undefined)).rejects.toThrow("fingerprint");
-  });
-
-  it("bounds pending status polling and does not allocate requests", async () => {
-    const fetcher = vi.fn(async () => Response.json({ status: "pending" }, { status: 202 }));
-    vi.stubGlobal("fetch", fetcher);
-    await expect(authorizeDemo("http://localhost:8787", pair.publicKey, () => undefined, { attempts: 100, intervalMs: 0 })).rejects.toThrow("timed out");
-    expect(fetcher).toHaveBeenCalledTimes(60);
-  });
-
-  it("aborts a hung status request at the shared authorization deadline", async () => {
-    const fetcher = vi.fn((_url: URL, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
-      init.signal!.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-    }));
-    vi.stubGlobal("fetch", fetcher);
-    await expect(authorizeDemo("http://localhost:8787", pair.publicKey, () => undefined, { timeoutMs: 10 })).rejects.toThrow("timed out");
-    expect(fetcher).toHaveBeenCalledTimes(1);
-  });
-
-  it("fails closed on status errors without reserving and reports authorization quotas", async () => {
-    const response = Response.json({ error: "synthetic-secret", quota: { kind: "approvals_daily", limit: 41, resetAt: Date.UTC(2030, 0, 2) } }, { status: 429 });
-    const json = vi.spyOn(response, "json");
-    const fetcher = vi.fn().mockResolvedValue(response);
-    vi.stubGlobal("fetch", fetcher);
-    const failure = await authorizeDemo("http://localhost:8787", pair.publicKey, () => undefined).catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(Error);
-    expect((failure as Error).message).toContain("authorization failed (429)");
-    expect((failure as Error).message).toContain("Daily CLI approval limit reached (41)");
-    expect((failure as Error).message).toContain("00:00 UTC");
-    expect((failure as Error).message).toContain("DEMO_LIMITS.approvalsPerDay");
-    expect((failure as Error).message).not.toContain("synthetic-secret");
-    expect(fetcher).toHaveBeenCalledTimes(1);
-    expect(json).toHaveBeenCalledTimes(1);
-  });
-
-  it.each([200, 202])("preserves malformed-success validation for HTTP %s", async (status) => {
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json(null, { status })));
-    await expect(authorizeDemo("http://localhost:8787", pair.publicKey, () => undefined)).rejects.toThrow("unexpected JSON response");
   });
 });
 

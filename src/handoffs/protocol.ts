@@ -1,3 +1,4 @@
+import type { StoredRequestContext } from "./context-contract.js";
 import type { QuotaInfo } from "./quota.js";
 
 export type HandoffAccess = "private" | "public";
@@ -30,8 +31,22 @@ export interface GoneReply {
   body: { readonly status: "gone" };
 }
 
+export type CreateContextReply =
+  | { status: 201; body: StoredRequestContext }
+  | FailureReply<400 | 409 | 429>;
+export type GetContextReply =
+  | { status: 200; body: StoredRequestContext }
+  | FailureReply<400 | 404>;
+
+export const REQUEST_CONTEXT_LIMITS = {
+  maxEncodedBytes: 32768,
+  draftTtlMs: 180_000,
+} as const;
+export const ENCRYPTED_CONTEXT = /^[A-Za-z0-9_-]+$/u;
+
 export type ReserveReply =
   | { status: 201; body: ReservedHandoff }
+  | GoneReply
   | FailureReply<400 | 401 | 409 | 429>;
 export type AuthorizeWriteReply =
   | { status: 200; body: { readonly authorized: true } }
@@ -61,6 +76,8 @@ export type CredentialStatusReply =
   | FailureReply<400>;
 
 export interface ReserveInput {
+  /** Supplied HTTP addresses activate a live draft; generated addresses create directly. */
+  source: "draft" | "generated";
   id: string;
   recipientFingerprint: string;
   writeHash: string;
@@ -74,6 +91,9 @@ export const CAPABILITY = /^[a-f0-9]{64}$/u;
 export const HANDOFF_SERVICE_NAME = "handoffs";
 
 export const DEMO_LIMITS = {
+  draftsPerDay: 500,
+  draftsPerMinutePerIp: 10,
+  liveDrafts: 200,
   approvalsPerDay: 200,
   approvalAttemptsPerDay: 500,
   approvalAttemptsPerMinutePerIp: 10,
