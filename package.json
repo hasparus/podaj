@@ -1,6 +1,6 @@
 {
   "name": "podaj",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "One-shot encrypted env handoff. Deploy your own Worker, then hand variables over a link.",
   "license": "UNLICENSED",
   "repository": {
