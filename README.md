@@ -3,7 +3,7 @@
 > [!NOTE]  
 > I realize this is a bit silly, but not every remote agent UI has a secure secret passing tool, and one of them kept asking me for passwords and immediately screenshotting them.
 
-One-shot environment-variable handoff: your CLI creates a link, a human fills it and clicks **send**, and the CLI saves an encrypted local receipt.
+One-shot environment-variable handoff: your agent creates a link in the CLI, a human fills it in the browser and clicks **send**, and the CLI saves an encrypted local receipt.
 
 ```sh
 npm i -g podaj
