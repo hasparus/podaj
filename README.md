@@ -3,16 +3,17 @@
 > [!NOTE]  
 > I realize this is a bit silly, but not every remote agent UI has a secure secret passing tool, and one of them kept asking me for passwords and immediately screenshotting them.
 
-One-shot environment-variable handoff: your agent creates a link in the CLI, a human fills it in the browser and clicks **send**, and the CLI saves an encrypted local receipt.
+One-shot environment-variable handoff: an agent creates a link in the CLI, a human fills it in the browser and clicks **send**, and the CLI saves an encrypted local receipt.
+## usage
 
 ```sh
 npm i -g podaj
-podaj wait API_KEY
+podaj wait [optional keys requested...]
 ```
 
-Requires Node.js 22+. Uses the public demo at `https://podaj.fyi` by default (no deployment or configuration needed). Share the single short link with the human and keep the CLI running. They verify, fill the prefilled rows, and click **send** in the same tab; they do not need the agent's terminal.
+Requires Node.js 22+. Uses the public demo at `https://podaj.fyi` by default (no deployment or config needed). Share the single short link with the human and keep the CLI running. They verify, fill in the form, and click **send** in the same tab; they do not need the agent's terminal.
 
-Requested names prefill editable rows. They are hints, not filters: every received field is preserved, even if its name differs from what you asked for. Request details are encrypted on the server; their decryption secret stays in the link fragment. `wait` prints metadata, never values, on stdout:
+ `wait` prints metadata without values to stdout.
 
 ```json
 {"names":["API_KEY","deployment note"],"file":"/home/you/.local/share/podaj/inbox/example.age","identity":"/home/you/.local/share/podaj/age-identity.txt"}
@@ -28,7 +29,13 @@ podaj decrypt --identity /path/to/identity.txt /path/to/receipt.age
 age --decrypt --identity /path/to/identity.txt /path/to/receipt.age
 ```
 
-Receipts live in `${XDG_DATA_HOME:-$HOME/.local/share}/podaj/inbox` (files 0600, private directories 0700). The default `${XDG_DATA_HOME:-$HOME/.local/share}/podaj/age-identity.txt` is generated once (0600), reused, and never overwritten. `PODAJ_AGE_IDENTITY` selects an existing native age identity file. `PODAJ_AGE_RECIPIENT` selects a native public age recipient instead, takes precedence, and never loads or creates a local identity; metadata then omits `identity`. That field is always a path, never key contents. The pinned `age-encryption` Node package needs no external `age` binary and does not scan SSH/GPG keys.
+## more usage
+
+- Receipts live in `${XDG_DATA_HOME:-$HOME/.local/share}/podaj/inbox` (files 0600, private directories 0700).
+- The default `${XDG_DATA_HOME:-$HOME/.local/share}/podaj/age-identity.txt` is generated once (0600) and reused.
+- `PODAJ_AGE_IDENTITY` selects an existing native age identity file.
+- `PODAJ_AGE_RECIPIENT` selects a native public age recipient instead, takes precedence, and never loads or creates a local identity; metadata then omits `identity`.
+- The pinned `age-encryption` Node package needs no external `age` binary and does not scan SSH/GPG keys.
 
 ## self-hosting
 
