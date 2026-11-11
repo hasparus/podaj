@@ -170,9 +170,11 @@ export class HandoffParty extends DurableObject<HandoffPartyEnv> {
     const id = match[1];
     const result = this.store.status(id, subscribeHash);
     if (result.status !== 200) return json(result);
-    if (this.ctx.getWebSockets().length >= DEMO_LIMITS.sockets ||
-      this.ctx.getWebSockets(id).length >= DEMO_LIMITS.socketsPerHandoff) {
-      return json({ status: 429, body: { error: "socket limit reached" } });
+    if (this.ctx.getWebSockets().length >= DEMO_LIMITS.sockets) {
+      return json({ status: 429, body: { error: "socket limit reached", quota: { kind: "sockets_global", limit: DEMO_LIMITS.sockets } } });
+    }
+    if (this.ctx.getWebSockets(id).length >= DEMO_LIMITS.socketsPerHandoff) {
+      return json({ status: 429, body: { error: "socket limit reached", quota: { kind: "sockets_per_handoff", limit: DEMO_LIMITS.socketsPerHandoff } } });
     }
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];

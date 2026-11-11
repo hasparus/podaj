@@ -1,4 +1,5 @@
 import type { ClientConfig } from "../src/handoffs/protocol.js";
+import { handoffApiError, HOSTED_DEMO_ORIGIN, SELF_HOST_URL } from "../src/client/user-facing.js";
 
 export type Probe = "ok" | "unauthorized" | "locked" | "unreachable";
 export interface AuthorizationOptions { attempts?: number; intervalMs?: number; timeoutMs?: number }
@@ -31,12 +32,28 @@ export const tokenVerdict = (status: number): Probe => {
 export const authHeaders = (token: string): Record<string, string> =>
   token.length > 0 ? { Authorization: `Bearer ${token}` } : {};
 
+/** Only shared, validated quota copy may include details from a failed response. */
+export const requestFailure = async (response: Response, context: string, origin: string): Promise<Error> => {
+  const prefix = `${context} (${response.status})`;
+  if (response.status !== 429) return new Error(prefix);
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    body = undefined;
+  }
+  const error = handoffApiError(429, body);
+  const selfHost = origin === HOSTED_DEMO_ORIGIN ? `Self-host: ${SELF_HOST_URL}` : "";
+  return new Error([`${prefix}: ${error.message}`, error.ownerHelp, selfHost].filter(Boolean).join("\n"));
+};
+
 export const probeInstance = async (origin: string, token: string): Promise<Probe> => {
   const response = await fetch(new URL("/api/access", originOf(origin)), {
     headers: authHeaders(token),
     redirect: "error",
     signal: AbortSignal.timeout(10_000),
   });
+  if (response.status === 429) throw await requestFailure(response, "access check failed", origin);
   return tokenVerdict(response.status);
 };
 
@@ -52,7 +69,7 @@ export const instanceConfig = async (origin: string): Promise<ClientConfig> => {
     redirect: "error",
     signal: AbortSignal.timeout(10_000),
   });
-  if (!response.ok) throw new Error(`configuration unavailable (${response.status})`);
+  if (!response.ok) throw await requestFailure(response, "configuration unavailable", origin);
   const body = jsonRecord(await response.json());
   const { access, handoffTtlSeconds, maxHandoffBytes, turnstileSiteKey } = body;
   if ((access !== "private" && access !== "public") ||
@@ -98,6 +115,7 @@ export const authorizeDemo = async (origin: string, publicPem: string, note: (me
         redirect: "error",
         signal: AbortSignal.any([deadline, AbortSignal.timeout(10_000)]),
       });
+      if (response.status === 429) throw await requestFailure(response, "authorization failed", origin);
       const body = jsonRecord(await response.json());
       if (response.status === 200 && body.status === "approved") {
         if (body.recipientFingerprint !== fingerprint) {
@@ -109,7 +127,7 @@ export const authorizeDemo = async (origin: string, publicPem: string, note: (me
         return verifier;
       }
       if (response.status !== 202 || body.status !== "pending") {
-        throw new Error(`authorization failed (${response.status})`);
+        throw await requestFailure(response, "authorization failed", origin);
       }
       if (attempt + 1 < attempts) {
         await delay(options.intervalMs ?? 2_000, undefined, { signal: deadline });

@@ -13,7 +13,10 @@
   --surface: var(--zinc-900);
   --border: color-mix(in srgb, var(--zinc-800) 72%, transparent);
   --text: color-mix(in srgb, var(--zinc-300) 92%, var(--zinc-500));
-  --muted: var(--zinc-600);
+  --muted: var(--zinc-400);
+  --focus: var(--zinc-400);
+  --row-action-size: 28px;
+  --row-action-gap: 4px;
   font-family: "Commit Mono", ui-monospace, monospace;
   font-size: 13px;
   line-height: 1.35;
@@ -47,27 +50,34 @@ body {
   background: var(--bg);
 }
 
+.brand,
+.key-meta {
+  font-size: 0.75rem;
+}
+
 .brand {
-  font-size: 0.6875rem;
   font-weight: 500;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--muted);
+  letter-spacing: 0.03em;
+  text-transform: none;
+  color: var(--zinc-300);
 }
 
 .key-meta {
-  font-size: 0.625rem;
   color: var(--muted);
   letter-spacing: 0.01em;
   opacity: 0.9;
 }
 
-.main {
-  flex: 1;
+.container {
   width: 100%;
   max-width: 680px;
-  margin: 0 auto;
-  padding: 1rem 1rem 1.75rem;
+  margin-inline: auto;
+  padding-inline: 1rem;
+}
+
+.main {
+  flex: 1;
+  padding-block: 1rem 1.75rem;
 }
 
 .compose-hint {
@@ -77,9 +87,51 @@ body {
   color: var(--muted);
 }
 
+.authorization-page .shell {
+  min-height: 100svh;
+}
+
+.authorization-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.authorization-content {
+  width: 100%;
+}
+
+.authorization-heading {
+  margin: 0 0 0.875rem;
+  font-size: 1.25rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.authorization-challenge {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 65px;
+  margin: 1.5rem 0 1.25rem;
+}
+
+.authorization-page .status {
+  min-height: 4.5em;
+  margin: 0;
+}
+
+@media (max-width: 360px) {
+  .container {
+    padding-inline: 0.75rem;
+  }
+}
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 0.35rem;
   margin-top: 0.5rem;
 }
@@ -88,6 +140,8 @@ body {
   font: inherit;
   font-size: 0.8125rem;
   line-height: 1.2;
+  min-width: 28px;
+  min-height: 28px;
   cursor: pointer;
   border-radius: 3px;
   padding: 0.28rem 0.55rem;
@@ -97,6 +151,7 @@ body {
 }
 
 .btn-primary {
+  inline-size: calc(8ch + 1.1rem + 2px);
   background: color-mix(in srgb, var(--zinc-700) 55%, var(--zinc-900));
   color: var(--zinc-300);
   border-color: color-mix(in srgb, var(--zinc-700) 70%, transparent);
@@ -118,7 +173,7 @@ body {
 .var-head,
 .var-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) calc(2 * var(--row-action-size) + var(--row-action-gap));
   gap: 0.35rem;
   align-items: center;
   padding: 0.28rem 0.5rem;
@@ -157,15 +212,25 @@ body {
   font-size: 0.75rem;
 }
 
+.var-row input::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+button:focus-visible,
 .var-row input:focus {
-  outline: none;
-  border-color: color-mix(in srgb, var(--zinc-700) 65%, transparent);
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.var-row input:focus {
+  border-color: var(--focus);
   background: color-mix(in srgb, var(--bg) 85%, var(--zinc-850));
 }
 
 .row-actions {
   display: flex;
-  gap: 0.05rem;
+  gap: var(--row-action-gap);
   justify-content: flex-end;
 }
 
@@ -173,8 +238,8 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.5rem;
-  height: 1.5rem;
+  width: var(--row-action-size);
+  height: var(--row-action-size);
   border: none;
   background: transparent;
   color: var(--muted);
@@ -184,12 +249,12 @@ body {
 
 .pixel-icon {
   display: block;
-  width: 16px;
-  height: 16px;
+  width: 12px;
+  height: 12px;
 }
 
 .icon-btn:hover:not(:disabled) {
-  color: var(--zinc-500);
+  color: var(--text);
 }
 
 .icon-btn:disabled {
@@ -199,32 +264,80 @@ body {
 
 .status {
   margin-top: 0.5rem;
-  padding: 0.45rem 0.55rem;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  font-size: 0.75rem;
-  line-height: 1.35;
-  white-space: pre-wrap;
-  word-break: break-all;
-  background: color-mix(in srgb, var(--surface) 75%, transparent);
+  padding: 0;
+  border: 0;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: anywhere;
+  background: transparent;
   color: color-mix(in srgb, var(--text) 90%, var(--muted));
 }
 
 .status.error {
-  border-color: color-mix(in srgb, #7f1d1d 45%, transparent);
   color: color-mix(in srgb, #fca5a5 75%, var(--muted));
 }
 
 .status.ok {
-  border-color: var(--border);
   color: var(--text);
 }
 
+.limit-help {
+  margin-top: 0.5rem;
+  color: var(--muted);
+}
+
+.limit-help summary {
+  min-height: 28px;
+  padding-block: 4px;
+  cursor: pointer;
+}
+
+.limit-help summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.limit-help p {
+  margin: 0.25rem 0 0;
+}
+
+.status a {
+  color: inherit;
+  text-underline-offset: 0.2em;
+}
+
+.status a:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
 .site-footer {
-  max-width: 680px;
-  margin: 0 auto;
-  padding: 0.75rem 1rem 1.25rem;
+  padding-block: 0.75rem 1.25rem;
   font-size: 0.6875rem;
   line-height: 1.4;
   color: var(--muted);
+}
+
+@media (any-pointer: coarse) {
+  :root {
+    --row-action-size: 44px;
+  }
+
+  .btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .limit-help summary {
+    min-height: 44px;
+    padding-block: 12px;
+  }
+
+  .var-row input,
+  .var-row input.cell-key {
+    min-height: 44px;
+    font-size: 16px;
+  }
 }

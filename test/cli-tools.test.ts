@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -23,8 +23,11 @@ const fixture = (loginRequired = false) => {
   cpSync(resolve("src"), join(root, "src"), { recursive: true });
   writeFileSync(join(root, "package.json"), readFileSync(resolve("package.json")));
   writeFileSync(join(root, "wrangler.jsonc"), readFileSync(resolve("wrangler.jsonc")));
-  for (const name of ["@clack", "ws", "jsonc-parser"]) {
-    symlinkSync(resolve("node_modules", name), join(home, "node_modules", name), "dir");
+  const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { dependencies: Record<string, string> };
+  for (const name of Object.keys(manifest.dependencies).filter((dependency) => dependency !== "wrangler")) {
+    const link = join(home, "node_modules", name);
+    mkdirSync(dirname(link), { recursive: true });
+    symlinkSync(resolve("node_modules", name), link, "dir");
   }
   writeFileSync(join(wrangler, "package.json"), JSON.stringify({ name: "wrangler", version: "0.0.0", bin: { wrangler: "bin/wrangler.js" } }));
   const calls = join(home, "calls.jsonl");

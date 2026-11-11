@@ -1,6 +1,6 @@
 import { publicKeyFingerprint, publicKeyFromFragment, validateRecipientPublicKey } from "../crypto/podaj1.js";
 import { CAPABILITY } from "../handoffs/protocol.js";
-import { apiHandoffErrorText } from "./user-facing.js";
+import { handoffApiError } from "./user-facing.js";
 
 export interface AuthorizationRequest {
   challenge: string;
@@ -33,7 +33,6 @@ export const approveAdmission = async (request: AuthorizationRequest, turnstileT
   });
   if (!response.ok) {
     const data: unknown = await response.json().catch(() => ({}));
-    const code = typeof data === "object" && data !== null && "error" in data && typeof data.error === "string" ? data.error : undefined;
-    throw new Error(apiHandoffErrorText(code, response.status));
+    throw handoffApiError(response.status, data);
   }
 };

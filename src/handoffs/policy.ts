@@ -7,7 +7,7 @@ import type { HandoffParty } from "./party.js";
 import { handoffTtlSeconds, maxHandoffBytes, sameOrigin } from "../security.js";
 import { handoffAccess } from "./access.js";
 import { bearerCapability, digest } from "./capabilities.js";
-import { HandoffsApiError } from "./errors.js";
+import { HandoffsApiError, quotaRetryHeaders } from "./errors.js";
 import { jsonResponse } from "./http.js";
 import { HANDOFF_ID, HANDOFF_SERVICE_NAME, type ClientConfig } from "./protocol.js";
 
@@ -71,7 +71,7 @@ export const dailyIpHash = (request: Request): Promise<string> =>
 export const enforcePublicRateLimit = async (request: Request, env: Env): Promise<void> => {
   if (env.PUBLIC_API_LIMITER === undefined) return;
   const admitted = await env.PUBLIC_API_LIMITER.limit({ key: await dailyIpHash(request) });
-  if (!admitted.success) throw new HandoffsApiError({ status: 429, code: "rate limited" });
+  if (!admitted.success) throw new HandoffsApiError({ status: 429, code: "rate limited", quota: { kind: "api_requests" } });
 };
 
 export const enforceApiPolicy = async (request: Request, env: Env): Promise<void> => {
@@ -87,9 +87,14 @@ export const enforceApiPolicy = async (request: Request, env: Env): Promise<void
 };
 
 export const apiErrorResponse = (error: unknown): HttpServerResponse.HttpServerResponse =>
-  HttpServerResponse.fromWeb(error instanceof HandoffsApiError
-    ? jsonResponse({ error: error.code }, error.status)
-    : jsonResponse({ error: "service unavailable" }, 503));
+  error instanceof HandoffsApiError
+    ? HttpServerResponse.setHeaders(
+      HttpServerResponse.fromWeb(jsonResponse({
+        error: error.code, ...(error.quota === undefined ? {} : { quota: error.quota }),
+      }, error.status)),
+      error.status === 429 ? quotaRetryHeaders(error.quota) : {},
+    )
+    : HttpServerResponse.fromWeb(jsonResponse({ error: "service unavailable" }, 503));
 
 /** Keep exceptions and schema diagnostics out of public replies and logs. */
 export const attempt = <A>(work: () => Promise<A>) =>

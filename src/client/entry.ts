@@ -18,7 +18,7 @@ const application = Runtime.makeApplication({
       globalThis.location.pathname,
       globalThis.location.hash,
     );
-    return init(route);
+    return init(route, globalThis.location.origin);
   },
   update,
   view,

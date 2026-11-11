@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware } from "effect/http-api";
 import { CapabilityPolicy } from "./policy.js";
+import { Quota } from "./errors.js";
 import { CAPABILITY, HANDOFF_ID } from "./protocol.js";
 
 export const HandoffId = Schema.String.check(Schema.isPattern(HANDOFF_ID));
@@ -45,7 +46,7 @@ export const CredentialApproved = Schema.Struct({
   expiresAt: Schema.Number,
   recipientFingerprint: Capability,
 });
-export const ErrorBody = Schema.Struct({ error: Schema.String });
+export const ErrorBody = Schema.Struct({ error: Schema.String, quota: Schema.optional(Quota) });
 export const Gone = Schema.Struct({ status: Schema.Literal("gone") }).annotate({ httpApiStatus: 410 });
 const errors = [400, 401, 403, 404, 408, 409, 413, 415, 429, 503].map((httpApiStatus) => ErrorBody.annotate({ httpApiStatus }));
 

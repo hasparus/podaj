@@ -12,6 +12,7 @@ import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { seal } from "../src/crypto/podaj1.js";
 import { packageTool } from "../scripts/package-paths.js";
+import { prepareAgeOutput } from "../scripts/age-output.js";
 import { localCloudflare, syntheticAccounts } from "./helpers/cloudflare-api.js";
 import { runTerminal } from "./helpers/terminal.js";
 
@@ -92,11 +93,12 @@ afterAll(async () => {
 
 describe("extracted real npm package in a hoisted installation", () => {
   it("ships its executable, shared compiled modules, real UI and Worker sources", async () => {
-    for (const path of ["dist/scripts/podaj.js", "dist/scripts/hooks/block-git-no-verify.js", "dist/scripts/decrypt-handoff.js", "src/worker.ts", "dist/client/index.html", "dist/client/authorize.html", "dist/client/_headers"]) {
+    for (const path of ["dist/scripts/podaj.js", "dist/scripts/hooks/block-git-no-verify.js", "dist/scripts/decrypt-handoff.js", "dist/scripts/age-output.js", "src/worker.ts", "dist/client/index.html", "dist/client/authorize.html", "dist/client/_headers"]) {
       expect(packedPaths).toContain(path);
     }
     expect(packedPaths.some((path) => path.startsWith("scripts/") || path.endsWith(".mjs"))).toBe(false);
-    expect(packedPaths.some((path) => path.startsWith("dist/scripts/init-"))).toBe(false);
+    expect(packedPaths.some((path) => path.startsWith("dist/scripts/init-") || path.endsWith("select-vars.js"))).toBe(false);
+    expect(packedPaths.some((path) => path.startsWith("dev/"))).toBe(false);
     expect(packedPaths.some((path) => /recipient\.pem/u.test(path))).toBe(false);
     expect((await stat(bin())).mode & 0o111).not.toBe(0);
     expect(existsSync(join(root, "node_modules"))).toBe(false);
@@ -156,7 +158,10 @@ describe("extracted real npm package in a hoisted installation", () => {
     for (const asset of assets) {
       const response = await runtime.dispatchFetch(`http://localhost${asset}`);
       expect(response.status, asset).toBe(200);
-      expect(Buffer.from(await response.arrayBuffer())).toEqual(await readFile(join(stage, "assets", asset)));
+      const actual = Buffer.from(await response.arrayBuffer());
+      const expected = await readFile(join(stage, "assets", asset));
+      expect(actual.byteLength, asset).toBe(expected.byteLength);
+      expect(actual.equals(expected), asset).toBe(true);
     }
     const fill = await runtime.dispatchFetch(`http://localhost/s/${"1".repeat(32)}`);
     expect(fill.status).toBe(200);
@@ -220,6 +225,20 @@ describe("extracted real npm package in a hoisted installation", () => {
       await api.close();
     }
   }, 30_000);
+
+  it("decrypts a standard age receipt through the packed Node bin without Bun or an age executable", async () => {
+    const output = await prepareAgeOutput({}, home);
+    const payload = { vars: [{ key: "a freely chosen label", value: "synthetic-packed-age-value" }] };
+    try {
+      const receipt = await output.save(JSON.stringify(payload));
+      expect(receipt.identity).toBeDefined();
+      const result = await exec(process.execPath, [bin(), "decrypt", "--identity", receipt.identity!, receipt.file], {
+        cwd: home, env: { ...env(), PATH: "/nonexistent" }, timeout: 10_000,
+      });
+      expect(JSON.parse(result.stdout)).toEqual(payload);
+      expect(result.stderr).toBe("");
+    } finally { output.close(); }
+  });
 
   it("decrypts a browser-sealed payload through the packed Node bin and its shared compiled envelope parser", async () => {
     const pair = generateKeyPairSync("rsa", { modulusLength: 2048, publicKeyEncoding: { type: "spki", format: "pem" }, privateKeyEncoding: { type: "pkcs8", format: "pem" } });

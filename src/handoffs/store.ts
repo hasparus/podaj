@@ -1,5 +1,6 @@
 import { handoffTtlSeconds, maxHandoffBytes } from "../security.js";
 import { handoffAccess } from "./access.js";
+import type { QuotaInfo } from "./quota.js";
 import {
   CAPABILITY,
   DEMO_LIMITS,
@@ -43,7 +44,7 @@ export type HandoffRow = {
 type Credential = { fingerprint: string; expires_at: number };
 const gone = (): GoneReply => ({ status: 410, body: { status: "gone" } });
 const unauthorized = (): FailureReply<401> => ({ status: 401, body: { error: "unauthorized" } });
-const exhausted = (): FailureReply<429> => ({ status: 429, body: { error: "limit reached" } });
+const exhausted = (quota: QuotaInfo): FailureReply<429> => ({ status: 429, body: { error: "limit reached", quota } });
 
 /** All authoritative reads and mutations are synchronous SQLite transactions. */
 export class HandoffStore {
@@ -162,11 +163,15 @@ export class HandoffStore {
       if (this.storage.sql.exec<{ id: string }>("SELECT id FROM handoffs WHERE id = ?", input.id).toArray().length > 0) {
         return { status: 409, body: { error: "already exists" } };
       }
+      if (this.count("reserve", "", day) >= DEMO_LIMITS.reservationsPerDay) {
+        return exhausted({ kind: "reservations_daily", limit: DEMO_LIMITS.reservationsPerDay, periodSeconds: DAY / 1000, resetAt: day + DAY });
+      }
       const live = this.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM handoffs WHERE state != 'consumed'").toArray()[0].count;
-      if (live >= DEMO_LIMITS.liveHandoffs ||
-        this.count("reserve", "", day) >= DEMO_LIMITS.reservationsPerDay ||
-        (input.creatorHash !== null && this.count("actor", input.creatorHash, day) >= DEMO_LIMITS.reservationsPerCredentialPerDay)) {
-        return exhausted();
+      if (live >= DEMO_LIMITS.liveHandoffs) {
+        return exhausted({ kind: "live_handoffs", limit: DEMO_LIMITS.liveHandoffs });
+      }
+      if (input.creatorHash !== null && this.count("actor", input.creatorHash, day) >= DEMO_LIMITS.reservationsPerCredentialPerDay) {
+        return exhausted({ kind: "reservations_per_credential", limit: DEMO_LIMITS.reservationsPerCredentialPerDay, periodSeconds: DAY / 1000, resetAt: day + DAY });
       }
       const expiresAt = now + this.ttlMs;
       this.storage.sql.exec(`INSERT INTO handoffs
@@ -236,8 +241,12 @@ export class HandoffStore {
       const day = Math.floor(now / DAY) * DAY;
       const minute = Math.floor(now / MINUTE) * MINUTE;
       this.purge(now);
-      if (this.count("attempt", "", day) >= DEMO_LIMITS.approvalAttemptsPerDay ||
-        this.count("ip", ipHash, minute) >= DEMO_LIMITS.approvalAttemptsPerMinutePerIp) return exhausted();
+      if (this.count("attempt", "", day) >= DEMO_LIMITS.approvalAttemptsPerDay) {
+        return exhausted({ kind: "verification_attempts_daily", limit: DEMO_LIMITS.approvalAttemptsPerDay, periodSeconds: DAY / 1000, resetAt: day + DAY });
+      }
+      if (this.count("ip", ipHash, minute) >= DEMO_LIMITS.approvalAttemptsPerMinutePerIp) {
+        return exhausted({ kind: "verification_attempts_per_ip", limit: DEMO_LIMITS.approvalAttemptsPerMinutePerIp, periodSeconds: MINUTE / 1000, resetAt: minute + MINUTE });
+      }
       this.increment("attempt", "", day);
       this.increment("ip", ipHash, minute);
       return { status: 200, body: { allowed: true } };
@@ -255,7 +264,9 @@ export class HandoffStore {
         if (existing.fingerprint !== fingerprint) return { status: 409, body: { error: "recipient mismatch" } };
         return { status: 200, body: { approved: true, expiresAt: existing.expires_at } };
       }
-      if (this.count("approve", "", day) >= DEMO_LIMITS.approvalsPerDay) return exhausted();
+      if (this.count("approve", "", day) >= DEMO_LIMITS.approvalsPerDay) {
+        return exhausted({ kind: "approvals_daily", limit: DEMO_LIMITS.approvalsPerDay, periodSeconds: DAY / 1000, resetAt: day + DAY });
+      }
       const expiresAt = now + CREDENTIAL_TTL;
       this.storage.sql.exec("INSERT INTO credentials(challenge, fingerprint, expires_at) VALUES (?, ?, ?)", challenge, fingerprint, expiresAt);
       this.increment("approve", "", day);

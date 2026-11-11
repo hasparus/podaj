@@ -1,3 +1,5 @@
+import type { QuotaInfo } from "./quota.js";
+
 export type HandoffAccess = "private" | "public";
 
 export interface ClientConfig {
@@ -21,7 +23,7 @@ export interface Reservation extends ReservedHandoff {
 
 export interface FailureReply<Status extends 400 | 401 | 404 | 409 | 413 | 429> {
   status: Status;
-  body: { readonly error: string };
+  body: { readonly error: string; readonly quota?: QuotaInfo };
 }
 export interface GoneReply {
   status: 410;

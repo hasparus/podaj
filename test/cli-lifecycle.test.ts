@@ -6,6 +6,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { Effect } from "effect";
+import { generateX25519Identity, identityToRecipient } from "age-encryption";
+import type { ReceivedHandoff } from "../scripts/age-output.js";
+import { defaultAgeIdentityPath } from "../scripts/age-output.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { admissionProofData, approveAdmission, parseAuthorizationRequest } from "../src/client/admission.js";
 import { init, Message, update, type Model } from "../src/client/app.js";
@@ -52,11 +55,11 @@ const setup = async (runtime = privateRuntime, existingKeys: ExistingKeys = "non
   }
   vi.stubGlobal("fetch", (input: string | URL | Request, options?: RequestInit) =>
     runtime.request(input instanceof Request ? input.url : String(input), options));
-  const run = (args: string[], token = runtime === demoRuntime ? "" : OWNER, stdin = "") => {
+  const run = (args: string[], token = runtime === demoRuntime ? "" : OWNER, stdin = "", env: NodeJS.ProcessEnv = {}) => {
     let stdout = "";
     let stderr = "";
     const result = exec(process.execPath, [resolve("dist/scripts/podaj.js"), ...args], {
-      env: { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: configDir, PODAJ_KEY_DIR: keysDir, PODAJ_URL: runtime.origin, PODAJ_API_AUTH_SECRET: token },
+      env: { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: configDir, PODAJ_KEY_DIR: keysDir, PODAJ_URL: runtime.origin, PODAJ_API_AUTH_SECRET: token, ...env },
       timeout: 20_000,
     });
     void result.catch(() => undefined);
@@ -80,13 +83,13 @@ const setup = async (runtime = privateRuntime, existingKeys: ExistingKeys = "non
 };
 type CliRun = ReturnType<Awaited<ReturnType<typeof setup>>["run"]>;
 
-const fill = async (runtime: NativeRuntime, cli: CliRun) => {
+const fill = async (runtime: NativeRuntime, cli: CliRun, pasted = "API_KEY=synthetic-env-value\nOTHER=not-requested\n") => {
   const link = await cli.link("/s/");
   const initial = init(parseAppRoute(link.pathname, link.hash));
   let model: Model = initial.model;
   for (const command of initial.commands ?? []) model = update(model, await Effect.runPromise(command.effect)).model;
   expect(model.recipientReady && model.limitsReady).toBe(true);
-  const edited = update(model, Message.PastedEnv({ text: "API_KEY=synthetic-env-value\nOTHER=not-requested\n" }));
+  const edited = update(model, Message.PastedEnv({ text: pasted }));
   expect(edited.commands ?? []).toHaveLength(0);
   await vi.waitFor(async () => { expect((await runtime.snapshot()).sockets).toHaveLength(1); });
   expect((await runtime.snapshot()).handoffs).toMatchObject([{ state: "pending", sealed: null }]);
@@ -102,10 +105,28 @@ const fill = async (runtime: NativeRuntime, cli: CliRun) => {
   expect(update(submitted.model, sent).model.sent).toBe(true);
   return link;
 };
-const complete = async (runtime: NativeRuntime, cli: CliRun, expected: Record<string, string> = { API_KEY: "synthetic-env-value" }) => {
-  const link = await fill(runtime, cli);
+const openReceipt = async (receipt: ReceivedHandoff, identity = receipt.identity) => {
+  if (identity === undefined) throw new Error("test requires a decryption identity");
+  const decrypted = await exec(process.execPath, [resolve("dist/scripts/podaj.js"), "decrypt", "--identity", identity, receipt.file], {
+    env: { PATH: process.env.PATH }, timeout: 10_000,
+  });
+  expect(decrypted.stderr).toBe("");
+  return JSON.parse(decrypted.stdout) as { vars: { key: string; value: string }[] };
+};
+const complete = async (runtime: NativeRuntime, cli: CliRun, expected: Record<string, string> = { API_KEY: "synthetic-env-value", OTHER: "not-requested" }, pasted?: string) => {
+  const link = await fill(runtime, cli, pasted);
   const output = await cli.result;
-  expect(JSON.parse(output.stdout)).toEqual(expected);
+  const received = JSON.parse(output.stdout) as ReceivedHandoff;
+  expect(received.names).toEqual(Object.keys(expected));
+  expect(received.file.endsWith(".age")).toBe(true);
+  expect((await stat(received.file)).mode & 0o777).toBe(0o600);
+  const ciphertext = await readFile(received.file);
+  expect(ciphertext.toString().startsWith("age-encryption.org/v1\n")).toBe(true);
+  for (const value of Object.values(expected)) {
+    expect(`${output.stdout}${output.stderr}`).not.toContain(value);
+    expect(ciphertext.includes(Buffer.from(value))).toBe(false);
+  }
+  expect(await openReceipt(received)).toEqual({ vars: Object.entries(expected).map(([key, value]) => ({ key, value })) });
   expect((await runtime.snapshot()).handoffs).toMatchObject([{ state: "consumed", sealed: null }]);
   const requests = await runtime.requests();
   const uploads = requests.filter((request) => request.method === "PUT");
@@ -114,7 +135,7 @@ const complete = async (runtime: NativeRuntime, cli: CliRun, expected: Record<st
   expect(uploads[0].body).not.toContain("API_KEY");
   expect(uploads[0].body).not.toContain("synthetic-env-value");
   expect(requests.filter((request) => request.path.endsWith("/consume"))).toHaveLength(1);
-  return { ...output, link, requests };
+  return { ...output, received, link, requests };
 };
 
 describe("compiled CLI → production human gates → Worker/SQLite/native WS → CLI", () => {
@@ -170,14 +191,54 @@ describe("compiled CLI → production human gates → Worker/SQLite/native WS �
     expect(publicPem).not.toBe(otherPair.publicKey);
   });
 
-  it("rejects invalid env keys before any network work or local writes", async () => {
+  it("rejects blank key names before any network work or local writes", async () => {
     const instance = await setup();
-    await expect(instance.run(["wait", "not-a-key"]).result).rejects.toMatchObject({ code: 1, stdout: "" });
+    await expect(instance.run(["wait", "   "]).result).rejects.toMatchObject({ code: 1, stdout: "" });
     expect(await instance.runtime.requests()).toEqual([]);
     expect(await readdir(instance.home)).toEqual([]);
   });
 
-  it("uses fresh memory-only keys, scoped capabilities and native readiness only after explicit send", async () => {
+  it("accepts punctuation and sentence labels as requested keys", async () => {
+    const instance = await setup();
+    const labels = { "service-token": "synthetic-one", "the key I use for this service": "synthetic-two" };
+    const pasted = Object.entries(labels).map(([key, value]) => `${key}=${value}`).join("\n");
+    const { received } = await complete(privateRuntime, instance.run(["wait", ...Object.keys(labels)]), labels, pasted);
+    expect(received.names).toEqual(Object.keys(labels));
+  });
+
+  it("preserves differently named values even when none of the requested labels match", async () => {
+    const instance = await setup();
+    const labels = { "the key I use for this service": "synthetic-mismatched-name", "żółw 🔑": "synthetic-extra-value" };
+    await complete(privateRuntime, instance.run(["wait", "API_KEY"]), labels,
+      Object.entries(labels).map(([key, value]) => `${key}=${value}`).join("\n"));
+  });
+
+  it("validates a configured age identity before network work or a fill link", async () => {
+    const instance = await setup();
+    await expect(instance.run(["wait", "API_KEY"], OWNER, "", { PODAJ_AGE_IDENTITY: join(instance.home, "missing.agekey") }).result)
+      .rejects.toMatchObject({ code: 1, stdout: "" });
+    expect(await instance.runtime.requests()).toEqual([]);
+    expect((await instance.runtime.snapshot()).handoffs).toEqual([]);
+  });
+
+  it("encrypts to an explicitly configured recipient without creating a managed identity", async () => {
+    const instance = await setup();
+    const identity = await generateX25519Identity();
+    const identityFile = join(instance.home, "existing.agekey");
+    await writeFile(identityFile, `${identity}\n`, { mode: 0o600 });
+    const cli = instance.run(["wait", "API_KEY"], OWNER, "", { PODAJ_AGE_RECIPIENT: await identityToRecipient(identity) });
+    await fill(privateRuntime, cli, "a different label=synthetic-custom-recipient");
+    const { stdout, stderr } = await cli.result;
+    const received = JSON.parse(stdout) as ReceivedHandoff;
+    expect(received.names).toEqual(["a different label"]);
+    expect(received.identity).toBeUndefined();
+    expect(`${stdout}${stderr}`).not.toContain(identity);
+    expect(`${stdout}${stderr}`).not.toContain("synthetic-custom-recipient");
+    expect(existsSync(defaultAgeIdentityPath({}, instance.home))).toBe(false);
+    expect(await openReceipt(received, identityFile)).toEqual({ vars: [{ key: "a different label", value: "synthetic-custom-recipient" }] });
+  });
+
+  it("uses fresh memory-only transport keys, scoped capabilities and native readiness only after explicit send", async () => {
     const instance = await setup();
     const publicKeys: string[] = [];
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -199,7 +260,9 @@ describe("compiled CLI → production human gates → Worker/SQLite/native WS �
       for (const capability of [subscribeAuth, readAuth]) expect(stderr).not.toContain(capability!.slice(7));
       expect(requests.some((request) => request.path.endsWith("/status"))).toBe(false);
       expect(stderr.split("\n").slice(0, 2)).toEqual(["paste these keys and click send:", "API_KEY"]);
-      expect(await readdir(instance.home, { recursive: true })).toEqual([]);
+      const identity = defaultAgeIdentityPath({}, instance.home);
+      expect((await stat(identity)).mode & 0o777).toBe(0o600);
+      expect((await readdir(join(instance.home, ".local/share/podaj/inbox"))).every((file) => file.endsWith(".age"))).toBe(true);
     }
     expect(new Set(publicKeys).size).toBe(2);
   });
@@ -243,7 +306,7 @@ describe("compiled CLI → production human gates → Worker/SQLite/native WS �
     expect(approval.challenge).toBe(createHash("sha256").update(credential).digest("hex"));
     expect(stderr).not.toContain(credential);
     expect(requests.find((request) => request.path === "/api/handoffs/reserve")?.authorization).toBe(`Bearer ${credential}`);
-    expect(await readdir(instance.home, { recursive: true })).toEqual([]);
+    expect((await stat(defaultAgeIdentityPath({}, instance.home))).mode & 0o777).toBe(0o600);
   }, 15_000);
 
   it.each(["compiled", "source"] as const)("keeps standalone decryption working through the %s CLI", async (variant) => {
@@ -261,7 +324,7 @@ describe("compiled CLI → production human gates → Worker/SQLite/native WS �
 });
 
 describe("isolated malformed-server responses", () => {
-  it.each<Malformation>(["approval-fingerprint", "overlap", "malformed-capability", "reservation-fingerprint", "id", "consumed-fingerprint", "ciphertext-key"])("rejects %s without plaintext or filesystem writes", async (malformation) => {
+  it.each<Malformation>(["approval-fingerprint", "overlap", "malformed-capability", "reservation-fingerprint", "id", "consumed-fingerprint", "ciphertext-key"])("rejects %s without plaintext or a completed receipt", async (malformation) => {
     const server = await malformedServer(malformation);
     cleanups.push(server.close);
     const home = await mkdtemp(join(tmpdir(), "podaj-malformed-"));
@@ -272,7 +335,8 @@ describe("isolated malformed-server responses", () => {
     });
     child.child.stdin?.end();
     await expect(child).rejects.toMatchObject({ code: 1, stdout: "" });
-    expect(await readdir(home, { recursive: true })).toEqual([]);
+    expect(await readdir(join(home, ".local/share/podaj/inbox"))).toEqual([]);
+    expect((await stat(defaultAgeIdentityPath({}, home))).mode & 0o777).toBe(0o600);
     if (malformation === "approval-fingerprint") expect(server.paths).not.toContain("/api/handoffs/reserve");
     if (!["consumed-fingerprint", "ciphertext-key"].includes(malformation)) expect(server.paths.some((path) => path.endsWith("/consume"))).toBe(false);
   });

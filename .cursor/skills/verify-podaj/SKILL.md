@@ -5,11 +5,11 @@ description: Verify podaj's CLI → human fill-only browser → CLI handoff usin
 
 # verify-podaj
 
-The CLI creates a fresh, memory-only recipient keypair for each `wait`, reserves a request, and prints a fill URL on stderr. The human fills that URL and clicks **send**. The browser encrypts names and values; the terminal consumes ciphertext, decrypts locally, and prints JSON on stdout. Read the [feature map](features/README.md) before choosing checks.
+The CLI creates fresh memory-only RSA transport keys for each `wait`, reserves a request, and prints a fill URL on stderr. The human fills that URL and clicks **send**. The browser encrypts names and values using the unchanged `PODAJ1.` protocol; the terminal collects, decrypts in memory, and preserves the entire payload in a standard binary `.age` receipt. Stdout is metadata only: `{names: string[], file: absoluteAgeFilePath, identity?: localIdentityFilePath}`. Requested names are hints, not filters. Read the [feature map](features/README.md) before choosing checks.
 
 ## Boundaries
 
-- Verify localhost only. Never contact real Cloudflare accounts, the closed upstream host, or any deployed instance. The primary URL is not deployed and public npm availability is unverified: do not invent a hostname or use a registry CLI.
+- Verify localhost only. Never contact real Cloudflare accounts, the closed upstream host, or any deployed instance. The product defaults to `https://podaj.fyi`, but this journey must use the isolated localhost URL and checkout CLI, never the demo or a registry CLI.
 - Use synthetic values only. Never read real credential files, `.dev.vars`, existing podaj keys/config, or Wrangler OAuth state. Do not install, log in, deploy, rotate secrets, or commit as part of verification; stop if a prerequisite is missing.
 - Use the existing build and tests. Handwritten application/tool source is TypeScript; do not add a parallel verification harness.
 
@@ -22,7 +22,7 @@ Use these existing tests as the protocol/security evidence, not as substitutes f
 | Gate | Evidence |
 | --- | --- |
 | `test/worker-runtime.test.ts` | Actual Workers HTTP/RPC/SQLite runtime, native WebSocket lifecycle, role/slot isolation, atomic fill/consume, replay 410, expiry, ciphertext-only storage, CSP and mutation rejection |
-| `test/cli-lifecycle.test.ts` | Compiled CLI lifecycle against a local fixture server; ephemeral keys, exact JSON, socket-first/poll fallback, demo enrollment binding, malformed response rejection |
+| `test/cli-lifecycle.test.ts`, `test/age-output.test.ts` | Compiled CLI lifecycle and encrypted receipts; memory-only transport keys, metadata stdout, full-payload preservation, identity selection/reuse, file modes, socket-first/poll fallback, demo enrollment binding, malformed response rejection |
 | `test/client-app.test.ts` | Landing page has no creation flow; edits stay local; explicit send uploads only ciphertext with write authority |
 | `test/parse-route.test.ts`, `test/parse-env.test.ts`, `test/podaj1.test.ts` | Complete fragment validation, env paste, encryption/decryption |
 
@@ -49,12 +49,14 @@ This is a procedure to perform, not a claim that a browser run has happened.
 
 5. In that sanitized environment, invoke the installed repository Wrangler binary with `dev --local --config "$SCRATCH/wrangler.json" --ip 127.0.0.1 --port "$PORT" --inspector-port "$INSPECTOR_PORT" --persist-to "$SCRATCH/state"`. Persist only local SQLite-backed Durable Object state there. Track the actual child PID/process group and logs. Never pass `--remote`.
 6. Set `URL=http://127.0.0.1:$PORT`. Wait for this process to serve `/api/config` with private mode and `/` with the built SPA; verify port ownership and CSP/no-store. Readiness must not reserve or consume anything. No public recipient key file is needed.
-7. From scratch, run the real compiled CLI under Node: `node "$REPO/dist/scripts/podaj.js" config --url "$URL" </dev/null`. Its config must appear only under scratch. Then run `node "$REPO/dist/scripts/podaj.js" wait PODAJ_VERIFY_A PODAJ_VERIFY_B </dev/null >"$SCRATCH/result.json" 2>"$SCRATCH/cli.stderr"` as a tracked process, with the same isolated environment. Local private mode needs no owner secret.
+7. Leave `PODAJ_AGE_IDENTITY` and `PODAJ_AGE_RECIPIENT` unset for the default-identity journey. From scratch, run the real compiled CLI under Node: `node "$REPO/dist/scripts/podaj.js" config --url "$URL" </dev/null`. Its config must appear only under scratch. Then run `node "$REPO/dist/scripts/podaj.js" wait PODAJ_VERIFY_A PODAJ_VERIFY_B </dev/null >"$SCRATCH/result.json" 2>"$SCRATCH/cli.stderr"` as a tracked process, with the same isolated environment. Local private mode needs no owner secret.
 8. Read the browser skill's current `agent-browser` instructions. Open the exact CLI-emitted fill URL in your unique `--session`; follow [human-fill.md](features/human-fill.md), then [terminal-consume.md](features/terminal-consume.md). Never replace this journey with direct encryption/API calls.
 
 ## Evidence and cleanup
 
-Save synthetic-only before/after screenshots, accessibility snapshots, the exact expected/actual terminal JSON comparison, command results, and redacted localhost request metadata. Prove action and outcome, not just a final screen. Do not retain raw authorization headers, full capability URLs, verifier material, private keys, SQLite dumps, or real values in shared artifacts; redact address bars too.
+Save reviewed before/after screenshots, accessibility snapshots, metadata assertions, exact explicit-decryption comparison results, command exit statuses, mode checks, and redacted localhost request metadata. Prove action and outcome, not just a final screen. Keep DUMMY values masked/redacted in shared proof; do not share plaintext payloads, decrypted output, private-key contents, raw authorization headers, full capability URLs, verifier material, or SQLite dumps. Redact address bars too. Identity paths are metadata, not key material. Keep receipts and scratch identities private until verification/cleanup; never publish their contents.
+
+Verify all received fields, including unexpectedly named ones, by explicitly decrypting in memory for exact comparison. Automatic stdout/files/global environment must contain no plaintext values. After the CLI exits successfully, require the receipt and identity to remain readable by a separate explicit decrypt process. This is persistence evidence, not a crash/network-loss recovery guarantee; collection remains at most once.
 
 Keep automated and manual claims separate. Report any missing browser run, demo coverage, storage inspection, or replay evidence as unverified; failures are not permission to weaken assertions.
 

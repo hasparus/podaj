@@ -6,7 +6,7 @@ import {
 } from "./api.js";
 import { onlyFields, readJsonBody } from "./body.js";
 import { bearerCapability, digest, randomCapability, recipientFingerprint, validSealedEnvelope } from "./capabilities.js";
-import { HandoffsApiError } from "./errors.js";
+import { HandoffsApiError, quotaRetryHeaders } from "./errors.js";
 import { randomHandoffId } from "./id.js";
 import { admissionConfig, authorizeCreation, clientConfig, dailyIpHash, handoffLimits, handoffService, requestIp, requireOwner } from "./policy.js";
 import type { FailureReply, GoneReply } from "./protocol.js";
@@ -25,6 +25,7 @@ const refusal = (result: FailureReply<400 | 401 | 404 | 409 | 413 | 429> | GoneR
   const schema = result.status === 410 ? Gone : ErrorBody;
   return HttpServerResponse.jsonUnsafe(Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(result.body), {
     status: result.status,
+    headers: result.status === 429 ? quotaRetryHeaders(result.body.quota) : {},
   });
 };
 

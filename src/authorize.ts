@@ -1,6 +1,7 @@
 import "@fontsource/commit-mono/400.css";
 import "@fontsource/commit-mono/500.css";
 import { admissionProofData, approveAdmission, parseAuthorizationRequest } from "./client/admission.js";
+import { AUTHORIZATION_STATUS, handoffApiError, HandoffApiError, isHostedDemoLimit, SELF_HOST_URL } from "./client/user-facing.js";
 
 interface Turnstile {
   render: (container: HTMLElement, options: {
@@ -39,11 +40,43 @@ export const mountAuthorizationPage = async (): Promise<void> => {
   const container = document.querySelector("#turnstile");
   if (!(status instanceof HTMLElement) || !(container instanceof HTMLElement)) {return;}
   const showError = (text: string) => { status.textContent = text; status.className = "status error"; };
+  const showFailure = (error: unknown, fallback: string) => {
+    if (error instanceof HandoffApiError && error.status === 429) {
+      status.replaceChildren(document.createTextNode(error.message));
+      if (isHostedDemoLimit(globalThis.location.origin, error)) {
+        const link = document.createElement("a");
+        link.href = SELF_HOST_URL;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = "self-host Podaj";
+        status.appendChild(document.createTextNode(" You can also "));
+        status.appendChild(link);
+        status.appendChild(document.createTextNode("."));
+      }
+      if (error.ownerHelp) {
+        const details = document.createElement("details");
+        details.className = "limit-help";
+        const summary = document.createElement("summary");
+        summary.textContent = "Owner settings";
+        const help = document.createElement("p");
+        help.textContent = error.ownerHelp;
+        details.replaceChildren(summary, help);
+        status.appendChild(details);
+      }
+      status.className = "status error";
+      return;
+    }
+    showError(error instanceof Error ? error.message : fallback);
+  };
+  status.textContent = AUTHORIZATION_STATUS.loading;
   try {
     const request = parseAuthorizationRequest(globalThis.location.hash);
     const cData = await admissionProofData(request);
     const response = await fetch("/api/config", { cache: "no-store", redirect: "error", signal: AbortSignal.timeout(10_000) });
-    if (!response.ok) {throw new Error("Verification isn't configured on this instance.");}
+    if (!response.ok) {
+      if (response.status === 429) { throw handoffApiError(response.status, await response.json().catch(() => ({}))); }
+      throw new HandoffApiError(response.status, "Verification isn't configured on this instance.");
+    }
     const config: unknown = await response.json();
     if (typeof config !== "object" || config === null || !("access" in config) || config.access !== "public"
       || !("turnstileSiteKey" in config) || typeof config.turnstileSiteKey !== "string" || !config.turnstileSiteKey) {
@@ -60,30 +93,30 @@ export const mountAuthorizationPage = async (): Promise<void> => {
           return;
         }
         approving = true;
-        status.textContent = "checking verification…";
+        status.textContent = AUTHORIZATION_STATUS.checking;
         try {
           await approveAdmission(request, token);
           approved = true;
           status.className = "status ok";
-          status.textContent = "verified. Your CLI can now create the fill link. You can close this tab.";
+          status.textContent = AUTHORIZATION_STATUS.verified;
         } catch (error) {
-          showError(error instanceof Error ? error.message : "Verification failed. Reload this page to try again.");
+          showFailure(error, "Verification failed. Reload this page to try again.");
         } finally {
           approving = false;
         }
       },
-      "error-callback": () => { showError("Verification failed. Check your connection and reload this page."); },
+      "error-callback": () => { showError(AUTHORIZATION_STATUS.failed); },
       "expired-callback": () => {
         if (!approved && !approving) {
-          showError("Verification expired. Reload this page to try again.");
+          showError(AUTHORIZATION_STATUS.expired);
         }
       },
       sitekey: config.turnstileSiteKey,
       theme: "dark",
     });
-    status.textContent = "complete verification above, then return to your CLI.";
+    status.textContent = AUTHORIZATION_STATUS.waiting;
   } catch (error) {
-    showError(error instanceof Error ? error.message : "Couldn't start verification. Ask the CLI for a new link.");
+    showFailure(error, "Couldn't start verification. Ask the CLI for a new link.");
   }
 };
 

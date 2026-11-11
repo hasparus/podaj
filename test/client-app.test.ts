@@ -32,8 +32,8 @@ const run = async (result: ReturnType<typeof update>) => {
   if (!command) throw new Error("missing command");
   return Effect.runPromise(command.effect);
 };
-const ready = async (access: "private" | "public" = "private") => {
-  const initial = init({ page: "compose", handoffId: ID, writeToken: WRITE, publicKeyPem });
+const ready = async (access: "private" | "public" = "private", origin = "") => {
+  const initial = init({ page: "compose", handoffId: ID, writeToken: WRITE, publicKeyPem }, origin);
   fetchMock.mockResolvedValueOnce(Response.json({ access, maxHandoffBytes: 32768, handoffTtlSeconds: 7200 }));
   let model = initial.model;
   for (const command of initial.commands ?? []) model = update(model, await Effect.runPromise(command.effect)).model;
@@ -113,6 +113,36 @@ describe("CLI-created human fill form", () => {
     expect(done.rows.every((row) => row.value === "")).toBe(true);
   });
 
+  it("merges pasted rows without losing edits, partial rows, or row identity", async () => {
+    let model = filled(await ready());
+    const original = model.rows[0];
+    model = update(model, Message.ClickedToggleReveal({ rowId: original.id })).model;
+    const spare = model.rows.at(-1)!;
+    model = update(model, Message.ChangedRowKey({ rowId: spare.id, key: "IN_PROGRESS" })).model;
+    model = update(model, Message.ClickedAdd()).model;
+    const vacantId = model.rows.at(-1)!.id;
+    const before = model.rows.slice(0, -1);
+    const result = update(model, Message.PastedEnv({ text: "EXTRA=one\nANOTHER=two\n" }));
+    noCommands(result);
+    expect(result.model.rows.slice(0, before.length)).toEqual(before);
+    expect(result.model.rows[0].revealed).toBe(true);
+    expect(result.model.rows.find((row) => row.id === vacantId)).toMatchObject({ key: "EXTRA", value: "one" });
+    expect(result.model.rows.at(-2)).toMatchObject({ key: "ANOTHER", value: "two" });
+    expect(result.model.rows.at(-1)).toMatchObject({ key: "", value: "" });
+    expect(new Set(result.model.rows.map((row) => row.id)).size).toBe(result.model.rows.length);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps both values when a paste conflicts with an existing name", async () => {
+    const model = filled(await ready());
+    const pasted = update(model, Message.PastedEnv({ text: `${NAME}=another-value\n` })).model;
+    expect(pasted.rows.filter((row) => row.key === NAME).map((row) => row.value)).toEqual([VALUE, "another-value"]);
+    const submitted = update(pasted, Message.ClickedSend());
+    noCommands(submitted);
+    expect(submitted.model.status).toEqual({ _tag: "Error", text: `Duplicate key: ${NAME}.` });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it.each(["sending", "sent"] as const)("ignores edits and double submissions when %s", async (state) => {
     const model = { ...filled(await ready()), [state]: true };
     for (const message of [...editMessages(model.rows[0].id), Message.ClickedSend()]) {
@@ -125,8 +155,8 @@ describe("CLI-created human fill form", () => {
 
   it.each([
     ["", "value", "Complete each"], ["INCOMPLETE", "", "Complete each"],
-    ["BAD-NAME", "value", "valid environment"], [NAME, "duplicate", "Duplicate key"],
-  ])("rejects incomplete, invalid, and duplicate rows: %s", async (key, value, error) => {
+    [NAME, "duplicate", "Duplicate key"],
+  ])("rejects incomplete and duplicate rows: %s", async (key, value, error) => {
     let model = filled(await ready());
     const rowId = model.rows.at(-1)!.id;
     model = update(model, Message.ChangedRowKey({ rowId, key })).model;
@@ -141,12 +171,62 @@ describe("CLI-created human fill form", () => {
   it.each([409, 410, 503])("retains values after a failed %i send", async (status) => {
     const model = filled(await ready());
     const submitted = update(model, Message.ClickedSend());
-    fetchMock.mockResolvedValueOnce(Response.json({ error: status === 409 ? "already shared" : "gone" }, { status }));
+    fetchMock.mockResolvedValueOnce(Response.json({ error: status === 409 ? "already filled" : "gone" }, { status }));
     const failed = update(submitted.model, await run(submitted)).model;
     expect(failed.sent).toBe(false);
     expect(failed.sending).toBe(false);
     expect(failed.rows).toEqual(model.rows);
     expect(failed.status._tag).toBe("Error");
+  });
+
+  it.each(["MY.KEY", "service-token", "the token I use to call this service", "🔑 access"])("encrypts arbitrary name labels unchanged: %s", async (key) => {
+    let model = await ready();
+    model = update(model, Message.ChangedRowKey({ rowId: "1", key })).model;
+    model = update(model, Message.ChangedRowValue({ rowId: "1", value: VALUE })).model;
+    fetchMock.mockResolvedValueOnce(Response.json({ id: ID, expiresAt: Date.now() + 7200000 }));
+    expect((await run(update(model, Message.ClickedSend())))._tag).toBe("SucceededSend");
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(JSON.parse(openPodaj1(body.sealed, privateKeyPem))).toEqual({ vars: [{ key, value: VALUE }] });
+  });
+
+  it.each([
+    ["https://podaj.fyi", "public", true],
+    ["https://self-hosted.example", "public", false],
+    ["https://private.example", "private", false],
+    ["https://podaj.fyi.attacker.example", "public", false],
+  ] as const)("explains quotas on every instance and identifies only the actual demo: %s", async (origin, access, demo) => {
+    const model = filled(await ready(access, origin));
+    const submitted = update(model, Message.ClickedSend());
+    fetchMock.mockResolvedValueOnce(Response.json({ error: "limit reached", quota: {
+      kind: "reservations_daily", limit: 137, periodSeconds: 86400, resetAt: Date.UTC(2030, 0, 2),
+    } }, { status: 429 }));
+    const result = update(submitted.model, await run(submitted)).model;
+    expect(result.sending).toBe(false);
+    expect(result.rows).toEqual(model.rows);
+    expect(result.hostedDemo).toBe(demo);
+    expect(result.status).toMatchObject({ _tag: "RateLimited", text: expect.stringContaining("Daily handoff limit reached (137)"), ownerHelp: expect.stringContaining("DEMO_LIMITS.reservationsPerDay") });
+    if (result.status._tag === "RateLimited") {
+      expect(result.status.text).toContain("00:00 UTC");
+      expect(result.status.text).not.toContain("Collect");
+      expect(result.status.ownerHelp).not.toContain("HANDOFF_TTL_SECONDS");
+    }
+  });
+
+  it("also recognizes a demo limit while loading configuration", async () => {
+    const initial = init({ page: "compose", handoffId: ID, writeToken: WRITE, publicKeyPem }, "https://podaj.fyi");
+    fetchMock.mockResolvedValueOnce(Response.json({ error: "rate limited" }, { status: 429 }));
+    let model = initial.model;
+    for (const command of initial.commands ?? []) {
+      model = update(model, await Effect.runPromise(command.effect)).model;
+    }
+    expect(model.status).toMatchObject({ _tag: "RateLimited", text: "Request limit reached.", ownerHelp: "" });
+    expect(model.limitsReady).toBe(false);
+  });
+
+  it("does not label unrelated demo failures as quota exhaustion", async () => {
+    const submitted = update(filled(await ready("public", "https://podaj.fyi")), Message.ClickedSend());
+    fetchMock.mockResolvedValueOnce(Response.json({}, { status: 503 }));
+    expect(update(submitted.model, await run(submitted)).model.status).toEqual({ _tag: "Error", text: "This instance is unavailable or not fully configured. Try again later." });
   });
 
   it("does not upload an encrypted bundle over the configured limit", async () => {

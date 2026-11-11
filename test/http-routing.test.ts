@@ -11,6 +11,8 @@ import { Approved, Consumed, CredentialApproved, CredentialPending, Filled, Rese
 import { handleHandoffsApi } from "../src/handoffs/handler.js";
 import { CSP } from "../src/security.js";
 import { HandoffStore } from "../src/handoffs/store.js";
+import { DEMO_LIMITS } from "../src/handoffs/protocol.js";
+import type { QuotaInfo } from "../src/handoffs/quota.js";
 import { sqliteStorage } from "./helpers/sqlite.js";
 
 const id = "0123456789abcdef0123456789abcdef";
@@ -321,7 +323,72 @@ describe("declarative HTTP routing", () => {
       method: "PUT", headers: { ...json, "CF-Connecting-IP": "192.0.2.1" }, body: "invalid",
     });
     expect(blocked.status).toBe(429);
+    expect(await blocked.json()).toEqual({ error: "rate limited", quota: { kind: "api_requests" } });
+    expect(blocked.headers.get("Retry-After")).toBeNull();
     expect(limited.service.fill).not.toHaveBeenCalled();
+    const privateInstance = setup({ PUBLIC_API_LIMITER: { limit: async () => ({ success: false }) } });
+    expect((await privateInstance.request("/api/config")).status).toBe(200);
+  });
+
+  it.each([
+    { kind: "reservations_daily", limit: DEMO_LIMITS.reservationsPerDay, periodSeconds: 86400, resetAt: 123457501 },
+    { kind: "live_handoffs", limit: DEMO_LIMITS.liveHandoffs },
+    { kind: "api_requests" },
+  ] satisfies QuotaInfo[])("forwards strict quota DTOs and only known reset times: $kind", async (quota) => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(123456000);
+    try {
+      const { request, service } = setup();
+      service.reserve.mockResolvedValueOnce({ status: 429, body: { error: "limit reached", quota } });
+      const response = await request("/api/handoffs/reserve", {
+        method: "POST", headers: { ...json, Authorization: "Bearer owner" },
+        body: JSON.stringify({ recipientPublicKey: await recipientKey() }),
+      });
+      expect(response.status).toBe(429);
+      expect(await response.json()).toEqual({ error: "limit reached", quota });
+      expect(response.headers.get("Retry-After")).toBe("resetAt" in quota ? "2" : null);
+    } finally { clock.mockRestore(); }
+  });
+
+  it("never emits negative Retry-After for a reset crossed during RPC forwarding", async () => {
+    const { request, service } = setup();
+    const quota: QuotaInfo = { kind: "reservations_daily", limit: DEMO_LIMITS.reservationsPerDay, periodSeconds: 86400, resetAt: 1 };
+    service.reserve.mockResolvedValueOnce({ status: 429, body: { error: "limit reached", quota } });
+    const response = await request("/api/handoffs/reserve", {
+      method: "POST", headers: { ...json, Authorization: "Bearer owner" },
+      body: JSON.stringify({ recipientPublicKey: await recipientKey() }),
+    });
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("0");
+  });
+
+  it.each([
+    { kind: "unknown", limit: 1 },
+    { kind: "reservations_daily", limit: "200" },
+    { kind: "reservations_daily", limit: 200, periodSeconds: "86400" },
+    { kind: "reservations_daily", limit: 200, resetAt: "12345" },
+    { kind: "live_handoffs", limit: 200, secret: "must-not-leave-rpc" },
+  ])("fails closed for malformed RPC quota diagnostics: %j", async (quota) => {
+    const { request, service } = setup();
+    service.reserve.mockResolvedValueOnce({ status: 429, body: { error: "limit reached", quota } } as unknown as ReserveReply);
+    const response = await request("/api/handoffs/reserve", {
+      method: "POST", headers: { ...json, Authorization: "Bearer owner" },
+      body: JSON.stringify({ recipientPublicKey: await recipientKey() }),
+    });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "service unavailable" });
+    expect(response.headers.get("Retry-After")).toBeNull();
+  });
+
+  it("does not invent diagnostics when a refusal omits quota metadata", async () => {
+    const { request, service } = setup();
+    service.reserve.mockResolvedValueOnce({ status: 429, body: { error: "limit reached" } });
+    const response = await request("/api/handoffs/reserve", {
+      method: "POST", headers: { ...json, Authorization: "Bearer owner" },
+      body: JSON.stringify({ recipientPublicKey: await recipientKey() }),
+    });
+    expect(response.status).toBe(429);
+    expect(await response.json()).toEqual({ error: "limit reached" });
+    expect(response.headers.get("Retry-After")).toBeNull();
   });
 
   it("counts streaming bytes before attempting JSON/schema decoding", async () => {

@@ -11,7 +11,6 @@ import { buildSync } from "esbuild";
 import { configPath, DEFAULT_URL, readConfig, resolveConnection, writeConfig } from "../scripts/config.js";
 import { composeUrl } from "../scripts/deploy-text.js";
 import { recipientIdentity } from "../scripts/instance.js";
-import { selectVars } from "../scripts/select-vars.js";
 import { packageRoot, packageTool } from "../scripts/package-paths.js";
 import { applyCommandPolicy } from "../scripts/vcs-command-policy.js";
 
@@ -87,25 +86,6 @@ describe("private config replacement", () => {
       expect(() => writeConfig(join(home, "podaj/config.json"), { url: "https://podaj.test", token: "secret" })).toThrow("must not be a symlink");
       expect(existsSync(join(outside, "config.json"))).toBe(false);
     } finally { rmSync(home, { recursive: true, force: true }); }
-  });
-});
-
-describe("selectVars", () => {
-  const plain = JSON.stringify({
-    vars: [
-      { key: "OPENAI_API_KEY", value: "sk-1" },
-      { key: "OTHER", value: "nope" },
-    ],
-  });
-
-  it("returns only the requested keys", () => {
-    expect(selectVars(plain, ["OPENAI_API_KEY"])).toEqual({
-      OPENAI_API_KEY: "sk-1",
-    });
-  });
-
-  it("fails when a requested key was not pasted", () => {
-    expect(() => selectVars(plain, ["MISSING"])).toThrow(/missing MISSING/u);
   });
 });
 

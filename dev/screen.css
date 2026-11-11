@@ -1,0 +1,24 @@
+.canvas-turnstile {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  width: 300px;
+  height: 65px;
+  padding: 10px 16px;
+  border: 1px dashed #8a8a93;
+  background: #303033;
+  color: #e7e7eb;
+  font-family: Arial, sans-serif;
+  text-align: left;
+}
+
+.canvas-turnstile strong {
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.canvas-turnstile span {
+  color: #c7c7cf;
+  font-size: 11px;
+}

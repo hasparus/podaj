@@ -29,18 +29,17 @@ import {
 import { composeUrl } from "./deploy-text.js";
 import { configArgs } from "./config-args.js";
 import { runConfig, runDeploy } from "./setup-flow.js";
-import { authHeaders, authorizeDemo, instanceConfig, originOf, probeInstance, recipientIdentity } from "./instance.js";
+import { authHeaders, authorizeDemo, instanceConfig, originOf, probeInstance, recipientIdentity, requestFailure } from "./instance.js";
 import { keyDir } from "./keygen.js";
 import { generateKeypair } from "./keypair.js";
 import { openPodaj1 } from "./open-podaj1.js";
-import { selectVars } from "./select-vars.js";
+import { prepareAgeOutput } from "./age-output.js";
 import { readStdinToken } from "./stdin-token.js";
 import { clientBuilt, stageWorker, workerStageDir } from "./stage-worker.js";
 import { waitReady } from "./wait-ready.js";
 import { createWrangler } from "./wrangler.js";
 
 const repoRoot = packageRoot(import.meta.url);
-const KEY_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 
 const usage = () => {
   console.error(`usage:
@@ -49,9 +48,9 @@ const usage = () => {
   podaj config
   podaj config --url https://<name>.workers.dev   # private: PODAJ_API_AUTH_SECRET on stdin
   podaj keygen
-  podaj decrypt [PODAJ1.blob]
+  podaj decrypt [--identity <file>] [file.age | PODAJ1.blob]
 
-wait    request variables using podaj.fyi by default; print the result as JSON
+wait    request variables; save encrypted values and print names + file path
 deploy  deploy your own worker and save its connection automatically
 config  connect to an existing worker without deploying`);
   process.exit(2);
@@ -219,55 +218,61 @@ const setup = async (command: "config" | "deploy", argv: string[]) => {
   else await runConfig(args, io);
 };
 
-const wait = async (keys: string[]) => {
+const wait = async (requestedKeys: string[]) => {
+  const keys = requestedKeys.map((key) => key.trim());
   for (const key of keys) {
-    if (!KEY_NAME.test(key)) {
-      fail(`not an env key: ${key}`);
+    if (key.trim().length === 0) {
+      fail("key name must not be empty");
     }
   }
   const { token, url } = runtimeConfig();
-  const { privateKey: privatePem, publicKey: publicPem } = generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-    privateKeyEncoding: { format: "pem", type: "pkcs8" },
-    publicKeyEncoding: { format: "pem", type: "spki" },
-  });
-  const { fingerprint } = recipientIdentity(publicPem);
-  const config = await instanceConfig(url);
-  const creationToken = config.access === "public"
-    ? await authorizeDemo(url, publicPem, (message) => process.stderr.write(`${message}\n`))
-    : token;
-  const response = await fetch(new URL("/api/handoffs/reserve", url), {
-    body: JSON.stringify({ recipientPublicKey: publicPem }),
-    headers: { ...authHeaders(creationToken), "Content-Type": "application/json" },
-    method: "POST",
-    redirect: "error",
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!response.ok) {
-    fail(`reserve failed (${response.status})`);
+  const output = await prepareAgeOutput(process.env, homedir());
+  try {
+    const { privateKey: privatePem, publicKey: publicPem } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      privateKeyEncoding: { format: "pem", type: "pkcs8" },
+      publicKeyEncoding: { format: "pem", type: "spki" },
+    });
+    const { fingerprint } = recipientIdentity(publicPem);
+    const config = await instanceConfig(url);
+    const creationToken = config.access === "public"
+      ? await authorizeDemo(url, publicPem, (message) => process.stderr.write(`${message}\n`))
+      : token;
+    const response = await fetch(new URL("/api/handoffs/reserve", url), {
+      body: JSON.stringify({ recipientPublicKey: publicPem }),
+      headers: { ...authHeaders(creationToken), "Content-Type": "application/json" },
+      method: "POST",
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      throw await requestFailure(response, "reserve failed", url);
+    }
+    const reserved = reservedBody(await response.json(), fingerprint);
+    const link = composeUrl(url, reserved.id, reserved.writeToken, publicPem);
+    process.stderr.write(
+      keys.length === 0
+        ? `paste env vars and click send:\n${link}\n`
+        : `paste these keys and click send:\n${keys.join("\n")}\n${link}\n`,
+    );
+    await waitReady(reserved.id, url, reserved.subscribeToken, {
+      timeoutMs: Math.max(1, reserved.expiresAt - Date.now()),
+    });
+    const fetched = await fetch(new URL(`/api/handoffs/${reserved.id}/consume`, url), {
+      method: "POST",
+      headers: authHeaders(reserved.readToken),
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!fetched.ok) {
+      throw await requestFailure(fetched, "read failed", url);
+    }
+    const sealed = sealedBody(await fetched.json(), fingerprint);
+    const received = await output.save(openPodaj1(sealed, privatePem));
+    process.stdout.write(`${JSON.stringify(received, null, 2)}\n`);
+  } finally {
+    output.close();
   }
-  const reserved = reservedBody(await response.json(), fingerprint);
-  const link = composeUrl(url, reserved.id, reserved.writeToken, publicPem);
-  process.stderr.write(
-    keys.length === 0
-      ? `paste env vars and click send:\n${link}\n`
-      : `paste these keys and click send:\n${keys.join("\n")}\n${link}\n`,
-  );
-  await waitReady(reserved.id, url, reserved.subscribeToken, {
-    timeoutMs: Math.max(1, reserved.expiresAt - Date.now()),
-  });
-  const fetched = await fetch(new URL(`/api/handoffs/${reserved.id}/consume`, url), {
-    method: "POST",
-    headers: authHeaders(reserved.readToken),
-    redirect: "error",
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!fetched.ok) {
-    fail(`read failed (${fetched.status})`);
-  }
-  const sealed = sealedBody(await fetched.json(), fingerprint);
-  const picked = selectVars(openPodaj1(sealed, privatePem), keys);
-  process.stdout.write(`${JSON.stringify(picked, null, 2)}\n`);
 };
 
 const record = (value: unknown): Record<string, unknown> => {
@@ -319,7 +324,7 @@ try {
       break;
     }
     case "decrypt": {
-      decryptHandoff(rest);
+      await decryptHandoff(rest);
       break;
     }
     default:

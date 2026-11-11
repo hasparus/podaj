@@ -27,7 +27,9 @@ const websocket = async (request: Request, env: Env): Promise<Response> => {
     const response = await handoffService(env).fetch(request);
     return response.status === 101 ? response : secured(response);
   } catch (error) {
-    if (error instanceof HandoffsApiError) return jsonResponse({ error: error.code }, error.status);
+    if (error instanceof HandoffsApiError) {
+      return jsonResponse({ error: error.code, ...(error.quota === undefined ? {} : { quota: error.quota }) }, error.status);
+    }
     return jsonResponse({ error: "service unavailable" }, 503);
   }
 };

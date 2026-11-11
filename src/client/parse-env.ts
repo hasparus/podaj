@@ -35,7 +35,7 @@ const parseLine = (line: string): EnvPair | null => {
     return null;
   }
   const key = withoutExport.slice(0, eq).trim();
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key)) {
+  if (key.length === 0) {
     return null;
   }
   const value = unquoteValue(withoutExport.slice(eq + 1));
@@ -44,7 +44,7 @@ const parseLine = (line: string): EnvPair | null => {
 
 /** Parse pasted `.env` text (line-oriented KEY=value, optional `export`, # comments). */
 export const parseEnvText = (text: string): EnvPair[] => {
-  const lines = text.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
+  const lines = text.split(/\r\n?|\n/u);
   const vars: EnvPair[] = [];
   for (const line of lines) {
     const pair = parseLine(line);
@@ -57,16 +57,7 @@ export const parseEnvText = (text: string): EnvPair[] => {
 
 /** True when clipboard text looks like bulk env paste (not a single bare token). */
 export const looksLikeEnvPaste = (text: string): boolean => {
-  if (text.includes("\n") || text.includes("\r")) {
-    return true;
-  }
-  const trimmed = text.trim();
-  if (trimmed.length === 0) {
-    return false;
-  }
-  const eq = trimmed.indexOf("=");
-  return (
-    eq > 0 &&
-    /^[A-Za-z_][A-Za-z0-9_]*$/u.test(trimmed.slice(0, eq).trim())
-  );
+  const lines = text.split(/\r\n?|\n/u).map((line) => line.trim()).filter((line) => line.length > 0 && !line.startsWith("#"));
+  if (lines.length === 0 || (lines.length === 1 && /^https?:\/\//iu.test(lines[0]))) { return false; }
+  return lines.every((line) => parseLine(line) !== null);
 };

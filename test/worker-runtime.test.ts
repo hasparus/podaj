@@ -6,7 +6,7 @@ import WebSocket from "ws";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { seal } from "../src/crypto/podaj1.js";
 import { digest, recipientFingerprint } from "../src/handoffs/capabilities.js";
-import type { Reservation } from "../src/handoffs/protocol.js";
+import { DEMO_LIMITS, type Reservation } from "../src/handoffs/protocol.js";
 
 const OWNER = "synthetic-owner-auth-not-a-cloudflare-credential";
 const HOST = "https://podaj.test";
@@ -211,10 +211,20 @@ describe("actual Workers HTTP/RPC/SQLite runtime", () => {
           response.webSocket.accept();
           clients.push(response.webSocket);
         }
-        if (index === 0) expect((await send(`/parties/handoff-party/${slot.id}`, slot.subscribeToken, undefined, "GET", { Upgrade: "websocket" })).status).toBe(429);
+        if (index === 0) {
+          const refused = await send(`/parties/handoff-party/${slot.id}`, slot.subscribeToken, undefined, "GET", { Upgrade: "websocket" });
+          expect(refused.status).toBe(429);
+          expect(await refused.json()).toEqual({ error: "socket limit reached", quota: { kind: "sockets_per_handoff", limit: DEMO_LIMITS.socketsPerHandoff } });
+          expect(refused.headers.get("Retry-After")).toBeNull();
+          expect(refused.headers.get("Cache-Control")).toBe("no-store");
+        }
       }
       const extra = await reserve();
-      expect((await send(`/parties/handoff-party/${extra.id}`, extra.subscribeToken, undefined, "GET", { Upgrade: "websocket" })).status).toBe(429);
+      const refused = await send(`/parties/handoff-party/${extra.id}`, extra.subscribeToken, undefined, "GET", { Upgrade: "websocket" });
+      expect(refused.status).toBe(429);
+      expect(await refused.json()).toEqual({ error: "socket limit reached", quota: { kind: "sockets_global", limit: DEMO_LIMITS.sockets } });
+      expect(refused.headers.get("Retry-After")).toBeNull();
+      expect((await send(`/parties/handoff-party/${first.id}`, first.readToken, undefined, "GET", { Upgrade: "websocket" })).status).toBe(401);
       expect((await snapshot()).sockets).toHaveLength(20);
     } finally {
       for (const socket of clients) socket.close();
@@ -267,8 +277,30 @@ describe("actual Workers HTTP/RPC/SQLite runtime", () => {
   it("atomically enforces the 200-reservation global budget under concurrent requests", async () => {
     const responses = await Promise.all(Array.from({ length: 201 }, () => send("/api/handoffs/reserve", OWNER, { recipientPublicKey: pair.publicKey })));
     expect(responses.filter((response) => response.status === 201)).toHaveLength(200);
-    expect(responses.filter((response) => response.status === 429)).toHaveLength(1);
-    expect((await snapshot()).handoffs).toHaveLength(200);
+    const refusals = responses.filter((response) => response.status === 429);
+    expect(refusals).toHaveLength(1);
+    expect(await refusals[0].json()).toMatchObject({ error: "limit reached", quota: {
+      kind: "reservations_daily", limit: DEMO_LIMITS.reservationsPerDay, periodSeconds: 86400,
+    } });
+    expect(refusals[0].headers.get("Retry-After")).not.toBeNull();
+    const state = await snapshot();
+    expect(state.handoffs).toHaveLength(DEMO_LIMITS.liveHandoffs);
+    const denied = await send("/api/handoffs/reserve", "wrong-owner", { recipientPublicKey: pair.publicKey });
+    expect(denied.status).toBe(401);
+    expect(await denied.json()).toEqual({ error: "unauthorized" });
+    const success = responses.find((response) => response.status === 201);
+    if (success === undefined) throw new Error("missing reservation");
+    const slot = await success.json() as Reservation;
+    expect((await send(`/api/handoffs/${slot.id}`, slot.writeToken, { sealed }, "PUT")).status).toBe(200);
+    expect((await send(`/api/handoffs/${slot.id}/consume`, slot.readToken, undefined, "POST")).status).toBe(200);
+    const daily = await send("/api/handoffs/reserve", OWNER, { recipientPublicKey: pair.publicKey });
+    expect(daily.status).toBe(429);
+    expect(await daily.json()).toMatchObject({ error: "limit reached", quota: {
+      kind: "reservations_daily", limit: DEMO_LIMITS.reservationsPerDay, periodSeconds: 86400,
+    } });
+    expect(Number(daily.headers.get("Retry-After"))).toBeGreaterThanOrEqual(0);
+    expect(daily.headers.get("Retry-After")).not.toBeNull();
+    expect(daily.headers.get("Cache-Control")).toBe("no-store");
   }, 20_000);
 });
 
@@ -306,6 +338,14 @@ describe("public admission through actual Workers and SQLite", () => {
     for (let index = 0; index < 6; index += 1) {
       const response = await send("/api/handoffs/reserve", verifier, { recipientPublicKey: pair.publicKey });
       expect(response.status).toBe(index < 5 ? 201 : 429);
+      if (index === 5) {
+        expect(await response.json()).toEqual({ error: "limit reached", quota: {
+          kind: "reservations_per_credential", limit: DEMO_LIMITS.reservationsPerCredentialPerDay,
+          periodSeconds: 86400, resetAt: (Math.floor(Date.now() / 86_400_000) + 1) * 86_400_000,
+        } });
+        expect(response.headers.get("Retry-After")).not.toBeNull();
+        expect(Number(response.headers.get("Retry-After"))).toBeGreaterThanOrEqual(0);
+      }
     }
     expect((await snapshot()).handoffs).toHaveLength(5);
     expect(verificationCalls).toBe(1);
@@ -332,7 +372,15 @@ describe("public admission through actual Workers and SQLite", () => {
   it("limits native HTTP traffic to 60 per minute before verification work", async () => {
     const responses = await Promise.all(Array.from({ length: 61 }, () => send("/api/config")));
     expect(responses.filter((response) => response.status === 200)).toHaveLength(60);
-    expect(responses.filter((response) => response.status === 429)).toHaveLength(1);
+    const refusals = responses.filter((response) => response.status === 429);
+    expect(refusals).toHaveLength(1);
+    expect(await refusals[0].json()).toEqual({ error: "rate limited", quota: { kind: "api_requests" } });
+    expect(refusals[0].headers.get("Retry-After")).toBeNull();
+    expect(refusals[0].headers.get("Cache-Control")).toBe("no-store");
+    const socket = await send(`/parties/handoff-party/${"a".repeat(32)}`, token(), undefined, "GET", { Upgrade: "websocket" });
+    expect(socket.status).toBe(429);
+    expect(await socket.json()).toEqual({ error: "rate limited", quota: { kind: "api_requests" } });
+    expect(socket.headers.get("Retry-After")).toBeNull();
     expect(verificationCalls).toBe(0);
   });
 });

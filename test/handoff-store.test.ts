@@ -10,6 +10,7 @@ import type {
   ApprovalAttemptReply, ApproveCredentialReply, AuthorizeWriteReply, ConsumeReply,
   CredentialStatusReply, FillReply, ReserveInput, ReserveReply, StatusReply,
 } from "../src/handoffs/protocol.js";
+import { DEMO_LIMITS } from "../src/handoffs/protocol.js";
 import { sqliteStorage } from "./helpers/sqlite.js";
 
 vi.mock("cloudflare:workers", () => ({
@@ -401,19 +402,36 @@ describe("SQLite handoff state machine", () => {
 });
 
 describe("strict reservation admission", () => {
-  it("counts global quotas for owner bypass, never grants beyond 200/day, and rejected creates allocate nothing", async () => {
-    const { store, counts, database } = setup();
+  it.each(["private", "public"] as const)("preserves global capacity and daily quotas in %s access, with no rejected allocations", async (access) => {
+    const { store, counts, database, advance, now } = setup({ PODAJ_ACCESS: access });
     const replies = await Promise.all(Array.from({ length: 210 }, async (_, index) => store.reserve(input(index + 1))));
     expect(replies.filter((result) => result.status === 201)).toHaveLength(200);
     expect(replies.filter((result) => result.status === 429)).toHaveLength(10);
     const before = counts();
-    expect(store.reserve(input(999)).status).toBe(429);
+    expect(store.reserve(input(999))).toEqual({
+      status: 429, body: { error: "limit reached", quota: {
+        kind: "reservations_daily", limit: DEMO_LIMITS.reservationsPerDay, periodSeconds: DAY / 1000, resetAt: 11 * DAY,
+      } },
+    });
+    expect(store.reserve(input(999, hex(999)))).toEqual({ status: 401, body: { error: "unauthorized" } });
     expect(counts()).toEqual(before);
     expect(database.prepare("SELECT COUNT(*) AS n FROM handoffs").get()).toEqual({ n: 200 });
     store.fill(input().id, input().writeHash, ciphertext);
     store.consume(input().id, input().readHash);
-    expect(store.reserve(input(999)).status).toBe(429);
+    const daily = {
+      status: 429, body: { error: "limit reached", quota: {
+        kind: "reservations_daily", limit: DEMO_LIMITS.reservationsPerDay, periodSeconds: DAY / 1000, resetAt: 11 * DAY,
+      } },
+    };
+    expect(store.reserve(input(999))).toEqual(daily);
+    advance(2 * HOUR);
+    expect(store.reserve(input(999))).toEqual(daily);
+    expect(database.prepare("SELECT COUNT(*) AS n FROM handoffs").get()).toEqual({ n: 0 });
     expect(counts()).toEqual(before);
+    advance(11 * DAY - now() - 1);
+    expect(store.reserve(input(999))).toEqual(daily);
+    advance(1);
+    expect(store.reserve(input(999)).status).toBe(201);
   });
 
   it("enforces live quota independently across UTC days without incrementing the new daily budget", () => {
@@ -421,7 +439,9 @@ describe("strict reservation admission", () => {
     for (let index = 1; index <= 200; index++) expect(store.reserve(input(index)).status).toBe(201);
     advance(HOUR);
     const before = counts();
-    expect(store.reserve(input(201)).status).toBe(429);
+    expect(store.reserve(input(201))).toEqual({
+      status: 429, body: { error: "limit reached", quota: { kind: "live_handoffs", limit: DEMO_LIMITS.liveHandoffs } },
+    });
     expect(counts()).toEqual(before);
     store.fill(input().id, input().writeHash, ciphertext);
     store.consume(input().id, input().readHash);
@@ -440,7 +460,13 @@ describe("strict reservation admission", () => {
     expect(counts()).toEqual(before);
     for (let index = 1; index <= 5; index++) expect(store.reserve(input(index, challenge)).status).toBe(201);
     const used = counts();
-    expect(store.reserve(input(6, challenge)).status).toBe(429);
+    expect(store.reserve(input(6, challenge))).toEqual({
+      status: 429, body: { error: "limit reached", quota: {
+        kind: "reservations_per_credential", limit: DEMO_LIMITS.reservationsPerCredentialPerDay,
+        periodSeconds: DAY / 1000, resetAt: 11 * DAY,
+      } },
+    });
+    expect(store.reserve({ ...input(6, challenge), recipientFingerprint: hex(11) })).toEqual({ status: 401, body: { error: "unauthorized" } });
     expect(store.reserve(input(1, challenge)).status).toBe(409);
     expect(store.reserve({ ...input(7, challenge), readHash: input().writeHash }).status).toBe(400);
     store.approveCredential(challenge, fingerprint);
@@ -450,6 +476,28 @@ describe("strict reservation admission", () => {
     expect(store.reserve(input(6, challenge)).status).toBe(401);
     store.approveCredential(challenge, fingerprint);
     expect(store.reserve(input(6, challenge)).status).toBe(429);
+  });
+
+  it("resets credential usage at the UTC-day boundary, not on consumption", () => {
+    const midnight = Date.UTC(2026, 10, 2);
+    const { store, advance, counts } = setup({ PODAJ_ACCESS: "public" }, midnight - 1);
+    const challenge = hex(500);
+    store.approveCredential(challenge, fingerprint);
+    for (let index = 1; index <= DEMO_LIMITS.reservationsPerCredentialPerDay; index++) {
+      expect(store.reserve(input(index, challenge)).status).toBe(201);
+      store.fill(input(index).id, input().writeHash, ciphertext);
+      store.consume(input(index).id, input().readHash);
+    }
+    const before = counts();
+    expect(store.reserve(input(999, challenge))).toEqual({
+      status: 429, body: { error: "limit reached", quota: {
+        kind: "reservations_per_credential", limit: DEMO_LIMITS.reservationsPerCredentialPerDay,
+        periodSeconds: DAY / 1000, resetAt: midnight,
+      } },
+    });
+    expect(counts()).toEqual(before);
+    advance(1);
+    expect(store.reserve(input(999, challenge)).status).toBe(201);
   });
 
   it("rolls back insertion and every quota increment together when storage fails", () => {
@@ -469,20 +517,34 @@ describe("strict reservation admission", () => {
 
 describe("bounded verification metadata and approvals", () => {
   it("enforces per-minute and global attempt quotas before allocating IP rows", () => {
-    const { store, counts, advance } = setup();
+    const { store, counts, advance, now } = setup({ PODAJ_ACCESS: "public" }, 10 * DAY + 59_999);
     const ip = hex(1000);
     for (let index = 0; index < 10; index++) expect(store.approvalAttempt(ip).status).toBe(200);
     const before = counts();
-    expect(store.approvalAttempt(ip).status).toBe(429);
+    expect(store.approvalAttempt(ip)).toEqual({
+      status: 429, body: { error: "limit reached", quota: {
+        kind: "verification_attempts_per_ip", limit: DEMO_LIMITS.approvalAttemptsPerMinutePerIp,
+        periodSeconds: 60, resetAt: 10 * DAY + 60_000,
+      } },
+    });
     expect(counts()).toEqual(before);
-    advance(60_000);
+    advance(1);
     expect(store.approvalAttempt(ip).status).toBe(200);
-    for (let index = 0; index < 489; index++) expect(store.approvalAttempt(hex(index + 2000)).status).toBe(200);
+    for (let index = 1; index < DEMO_LIMITS.approvalAttemptsPerMinutePerIp; index++) expect(store.approvalAttempt(ip).status).toBe(200);
+    for (let index = 0; index < 480; index++) expect(store.approvalAttempt(hex(index + 2000)).status).toBe(200);
     const exhausted = counts();
+    expect(store.approvalAttempt(ip)).toEqual({
+      status: 429, body: { error: "limit reached", quota: {
+        kind: "verification_attempts_daily", limit: DEMO_LIMITS.approvalAttemptsPerDay,
+        periodSeconds: DAY / 1000, resetAt: 11 * DAY,
+      } },
+    });
     for (let index = 0; index < 1000; index++) expect(store.approvalAttempt(hex(index + 10000)).status).toBe(429);
     expect(counts()).toEqual(exhausted);
     expect(counts().filter((row) => row.kind === "attempt")[0].count).toBe(500);
-    advance(DAY);
+    advance(11 * DAY - now() - 1);
+    expect(store.approvalAttempt(ip).status).toBe(429);
+    advance(1);
     expect(store.approvalAttempt(ip).status).toBe(200);
   });
 
@@ -509,13 +571,22 @@ describe("bounded verification metadata and approvals", () => {
     expect(store.credentialStatus(hex(500))).toEqual({ status: 200, body: { status: "approved", expiresAt: approved.body.expiresAt, recipientFingerprint: fingerprint } });
     for (let index = 1; index < 200; index++) expect(store.approveCredential(hex(index + 500), fingerprint).status).toBe(200);
     const before = counts();
-    expect(store.approveCredential(hex(900), fingerprint).status).toBe(429);
+    expect(store.approveCredential(hex(900), fingerprint)).toEqual({
+      status: 429, body: { error: "limit reached", quota: {
+        kind: "approvals_daily", limit: DEMO_LIMITS.approvalsPerDay, periodSeconds: DAY / 1000, resetAt: 11 * DAY,
+      } },
+    });
+    expect(store.approveCredential(hex(500), hex(11))).toEqual({ status: 409, body: { error: "recipient mismatch" } });
     expect(store.approveCredential(hex(500), fingerprint)).toEqual(approved);
     expect(counts()).toEqual(before);
     advance(HOUR);
     expect(store.credentialStatus(hex(500))).toEqual({ status: 202, body: { status: "pending" } });
     expect(store.reserve(input(1, hex(500))).status).toBe(401);
     expect(store.approveCredential(hex(900), fingerprint).status).toBe(429);
+    advance(11 * DAY - now() - 1);
+    expect(store.approveCredential(hex(900), fingerprint).status).toBe(429);
+    advance(1);
+    expect(store.approveCredential(hex(900), fingerprint).status).toBe(200);
   });
 
   it("purges expired state and counters older than two days, including on an otherwise idle alarm", () => {
