@@ -61,6 +61,36 @@ describe("CLI-created human fill form", () => {
     expect("privateKey" in initial.model).toBe(false);
   });
 
+  it("copies the exact command only after a landing-page click", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const initial = init({ page: "landing" });
+    expect(writeText).not.toHaveBeenCalled();
+    const clicked = update(initial.model, Message.ClickedCopyCommand());
+    const copied = update(clicked.model, await run(clicked));
+    expect(writeText).toHaveBeenCalledExactlyOnceWith("podaj wait API_KEY");
+    expect(copied.model.status).toEqual({ _tag: "Ok", text: "Command copied." });
+    noCommands(copied);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["denied", "unavailable"] as const)("offers manual copying when clipboard access is %s", async (mode) => {
+    const clipboard = mode === "denied" ? { writeText: vi.fn().mockRejectedValue(new Error("Permission denied")) } : undefined;
+    vi.stubGlobal("navigator", { clipboard });
+    const clicked = update(init({ page: "landing" }).model, Message.ClickedCopyCommand());
+    const failed = update(clicked.model, await run(clicked));
+    expect(failed.model.status).toEqual({ _tag: "Error", text: "Couldn't copy. Select the command and copy it manually." });
+    noCommands(failed);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not copy from the secret entry form", async () => {
+    const writeText = vi.fn();
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    noCommands(update(await ready(), Message.ClickedCopyCommand()));
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
   it("requires a complete CLI fill link before loading anything", () => {
     const initial = init({ page: "compose", handoffId: ID, writeToken: null, publicKeyPem: null });
     noCommands(initial);

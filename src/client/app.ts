@@ -9,6 +9,8 @@ import { looksLikeEnvPaste, parseEnvText } from "./parse-env.js";
 import type { AppRoute } from "./parse-route.js";
 import { causeMessage, handoffApiError, HandoffApiError, HOSTED_DEMO_ORIGIN, HOW_IT_WORKS, SELF_HOST_URL, statusError } from "./user-facing.js";
 
+const START_COMMAND = "podaj wait API_KEY";
+
 const Row = Schema.Struct({ id: Schema.String, key: Schema.String, revealed: Schema.Boolean, value: Schema.String });
 const Status = Schema.Union([
   Schema.Struct({ _tag: Schema.Literal("Hidden") }),
@@ -45,6 +47,9 @@ export const Message = defineMessageUnion({
   ClickedToggleReveal: { rowId: Schema.String },
   PastedEnv: { text: Schema.String },
   ClickedSend: {},
+  ClickedCopyCommand: {},
+  SucceededCopyCommand: {},
+  FailedCopyCommand: {},
   SucceededRecipient: { fingerprint: Schema.String },
   SucceededLimits: { maxHandoffBytes: Schema.Number },
   FailedLoad: { text: Schema.String },
@@ -80,6 +85,17 @@ const responseJson = async (response: Response): Promise<unknown> => {
   }
   return data;
 };
+
+const CopyCommand = DefineCommand("CopyCommand", {
+  messages: [Message.SucceededCopyCommand, Message.FailedCopyCommand],
+  execute: Effect.tryPromise({
+    try: () => navigator.clipboard.writeText(START_COMMAND),
+    catch: () => new Error("clipboard unavailable"),
+  }).pipe(Effect.match({
+    onSuccess: () => Message.SucceededCopyCommand(),
+    onFailure: () => Message.FailedCopyCommand(),
+  })),
+});
 
 const LoadRecipient = DefineCommand("LoadRecipient", {
   args: { publicKeyPem: Schema.String },
@@ -157,6 +173,10 @@ export const init = (route: AppRoute, origin = ""): ReturnType<Runtime.Applicati
 export const update = (model: Model, message: Message) => Message.match<Update.Return<Model, Message>>(message, {
   ChangedRowKey: ({ key, rowId }) => ({ model: locked(model) ? model : { ...model, rows: model.rows.map((row) => row.id === rowId ? { ...row, key } : row) } }),
   ChangedRowValue: ({ value, rowId }) => ({ model: locked(model) ? model : { ...model, rows: model.rows.map((row) => row.id === rowId ? { ...row, value } : row) } }),
+  ClickedCopyCommand: () => model.page === "landing"
+    ? { model: { ...model, status: hiddenStatus() }, commands: [CopyCommand()] } : { model },
+  SucceededCopyCommand: () => ({ model: { ...model, status: { _tag: "Ok", text: "Command copied." } } }),
+  FailedCopyCommand: () => ({ model: { ...model, status: statusError("Couldn't copy. Select the command and copy it manually.") } }),
   ClickedAdd: () => ({ model: locked(model) ? model : { ...model, rows: [...model.rows, newRow(model.nextRowId)], nextRowId: model.nextRowId + 1 } }),
   ClickedRemoveRow: ({ rowId }) => ({ model: locked(model) || model.rows.length <= 1 ? model : { ...model, rows: model.rows.filter((row) => row.id !== rowId) } }),
   ClickedToggleReveal: ({ rowId }) => ({ model: locked(model) ? model : { ...model, rows: model.rows.map((row) => row.id === rowId ? { ...row, revealed: !row.revealed } : row) } }),
@@ -260,7 +280,11 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
     })]),
     model.page === "compose" ? fillView(model, h) : h.main([h.Class("main container")], [
       h.p([h.Class("compose-hint")], ["Open the fill link from your CLI."]),
-      h.code([], ["podaj wait API_KEY"]),
+      h.pre([h.Class("cli-command")], [
+        h.code([], [START_COMMAND]),
+        h.button([h.Class("btn command-copy"), h.Type("button"), h.AriaLabel("copy command"), h.OnClick(Message.ClickedCopyCommand())], [model.status._tag === "Ok" ? "copied" : "copy"]),
+      ]),
+      statusView(model, h),
     ]),
     h.footer([h.Class("site-footer container")], [HOW_IT_WORKS]),
   ]),
