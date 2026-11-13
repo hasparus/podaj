@@ -2,6 +2,10 @@
 
 podaj is one dense column. one recipient key in the header. no environments list and no sidebar.
 
+## sizing
+
+Use the browser's default text size (normally 16px) as the root, with rem-based spacing and controls. The form column is at most 51rem wide. Keep the dense desktop layout readable without browser zoom. At widths up to 40rem, stack each key above its value, with row actions beside the value. Phone inputs use 1rem text; phone and coarse-pointer controls have 2.75rem minimum hit targets.
+
 ## copy
 
 Brand, headings, and short action labels stay lowercase: podaj, key, value, add, send. Body and status copy use normal sentence case: “Loading request…”, “Sent.”, and “Verified. Opening your request…”
@@ -16,7 +20,7 @@ Keep error copy short: name the limit and next action. Put configuration details
 
 ## icons
 
-Row actions use [pixelarticons](https://pixelarticons.com/mini/) via the `pixelarticons` package (24×24 viewBox, rendered as 12px glyphs in `currentColor`). Button hit targets are sized independently of the glyphs:
+Row actions use [pixelarticons](https://pixelarticons.com/mini/) via the `pixelarticons` package (24×24 viewBox, rendered as 0.875rem glyphs (14px at the default text size) in `currentColor`). Button hit targets are sized independently of the glyphs:
 
 - `eye` shows a value
 - `eye-off` hides it

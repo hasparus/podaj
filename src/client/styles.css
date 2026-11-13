@@ -15,10 +15,10 @@
   --text: color-mix(in srgb, var(--zinc-300) 92%, var(--zinc-500));
   --muted: var(--zinc-400);
   --focus: var(--zinc-400);
-  --row-action-size: 28px;
-  --row-action-gap: 4px;
+  --row-action-size: 2.125rem;
+  --row-action-gap: 0.3125rem;
   font-family: "Commit Mono", ui-monospace, monospace;
-  font-size: 13px;
+  font-size: 100%;
   line-height: 1.35;
   font-variant-ligatures: contextual;
   font-feature-settings: "calt" 1;
@@ -70,7 +70,7 @@ body {
 
 .container {
   width: 100%;
-  max-width: 680px;
+  max-width: 51rem;
   margin-inline: auto;
   padding-inline: 1rem;
 }
@@ -167,8 +167,8 @@ body {
   font: inherit;
   font-size: 0.8125rem;
   line-height: 1.2;
-  min-width: 28px;
-  min-height: 28px;
+  min-width: 2.125rem;
+  min-height: 2.125rem;
   cursor: pointer;
   border-radius: 3px;
   padding: 0.28rem 0.55rem;
@@ -276,8 +276,8 @@ button:focus-visible,
 
 .pixel-icon {
   display: block;
-  width: 12px;
-  height: 12px;
+  width: 0.875rem;
+  height: 0.875rem;
 }
 
 .icon-btn:hover:not(:disabled) {
@@ -316,8 +316,8 @@ button:focus-visible,
 }
 
 .limit-help summary {
-  min-height: 28px;
-  padding-block: 4px;
+  min-height: 2.125rem;
+  padding-block: 0.3125rem;
   cursor: pointer;
 }
 
@@ -347,24 +347,51 @@ button:focus-visible,
   color: var(--muted);
 }
 
-@media (any-pointer: coarse) {
+@media (any-pointer: coarse), (max-width: 40rem) {
   :root {
-    --row-action-size: 44px;
+    --row-action-size: 2.75rem;
   }
 
   .btn {
-    min-width: 44px;
-    min-height: 44px;
+    min-width: 2.75rem;
+    min-height: 2.75rem;
   }
 
   .limit-help summary {
-    min-height: 44px;
-    padding-block: 12px;
+    min-height: 2.75rem;
+    padding-block: 0.75rem;
   }
 
   .var-row input,
   .var-row input.cell-key {
-    min-height: 44px;
-    font-size: 16px;
+    min-height: 2.75rem;
+    font-size: 1rem;
+  }
+}
+
+@media (max-width: 40rem) {
+  .var-head {
+    display: none;
+  }
+
+  .var-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "key key"
+      "value actions";
+    gap: 0 0.5rem;
+    padding-block: 0.375rem;
+  }
+
+  .cell-key {
+    grid-area: key;
+  }
+
+  .cell-value {
+    grid-area: value;
+  }
+
+  .row-actions {
+    grid-area: actions;
   }
 }

@@ -239,7 +239,7 @@ const fillView = (model: Model, h: HtmlBuilder<Message>): Html => {
       h.div([h.Class("var-head")], [h.span([], ["key"]), h.span([], ["value"]), h.span([], [""])]),
       ...model.rows.map((row) => h.div([h.Class("var-row"), h.Key(row.id)], [
         h.input([h.Class("cell-key"), h.AriaLabel("key"), h.Placeholder("VARIABLE_NAME"), h.Value(row.key), h.Disabled(locked(model)), h.Autocomplete("off"), h.Spellcheck(false), h.OnInput((key) => Message.ChangedRowKey({ key, rowId: row.id })), onPaste]),
-        h.input([h.Type(row.revealed ? "text" : "password"), h.AriaLabel("value"), h.Placeholder("value"), h.Value(row.value), h.Disabled(locked(model)), h.Autocomplete("off"), h.OnInput((value) => Message.ChangedRowValue({ value, rowId: row.id })), onValuePaste]),
+        h.input([h.Class("cell-value"), h.Type(row.revealed ? "text" : "password"), h.AriaLabel("value"), h.Placeholder("value"), h.Value(row.value), h.Disabled(locked(model)), h.Autocomplete("off"), h.OnInput((value) => Message.ChangedRowValue({ value, rowId: row.id })), onValuePaste]),
         h.div([h.Class("row-actions")], [
           ...(row.value.length === 0 ? [] : [h.button([h.Class("icon-btn"), h.Type("button"), h.AriaLabel(row.revealed ? "hide" : "show"), h.Disabled(locked(model)), h.OnClick(Message.ClickedToggleReveal({ rowId: row.id }))], [pixelIcon(h, row.revealed ? eyeOffPaths : eyePaths)])]),
           h.button([h.Class("icon-btn"), h.Type("button"), h.AriaLabel("remove"), h.Disabled(locked(model) || model.rows.length <= 1), h.OnClick(Message.ClickedRemoveRow({ rowId: row.id }))], [pixelIcon(h, trashPaths)]),

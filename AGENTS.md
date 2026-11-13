@@ -22,7 +22,7 @@ Release CLI: `npm i -g podaj`, then `podaj wait KEY...`. With no saved connectio
 
 - Transport recipient public key comes from the CLI-encrypted request context, authenticated by the fill link's fragment secret; its private key stays in CLI memory. Optional short fingerprint in the header — **no environments list or sidebar**
 - Dense lowercase chrome: brand, headings, `key` | `value`, `add`, `send`. Body and status copy use sentence case, including `Sent.` No human-facing `create link` action. Use the vendor-neutral `VARIABLE_NAME` placeholder. See `design.md`
-- Row icons from `pixelarticons` (`eye` / `eye-off` / `trash`) render as 12px glyphs; button hit targets are sized independently of glyph sizing. Keep `aria-label` `show` / `hide` / `remove`. Show and hide only when the value is non-empty
+- Row icons from `pixelarticons` (`eye` / `eye-off` / `trash`) render as 0.875rem glyphs (14px at the default text size); button hit targets are sized independently of glyph sizing. Keep `aria-label` `show` / `hide` / `remove`. Show and hide only when the value is non-empty
 - CLI stages an encrypted sender context and shares one short `/s/:id#<secret>` link. Public verification at `/authorize/:id#<secret>` returns to the same short fill URL automatically. Requested labels prefill editable rows; no terminal copy/paste or second link. Edits stay local until explicit `send`. Legacy expanded fill links remain readable.
 - Browser pages never collect or decrypt handoffs. The CLI holds collection authority and decrypts locally.
 - Footer on the fill page: plain-language security (see `HOW_IT_WORKS` in `src/client/user-facing.ts`)
