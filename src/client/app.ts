@@ -11,7 +11,7 @@ import { looksLikeEnvPaste, parseEnvText } from "./parse-env.js";
 import { ComposeSource, type AppRoute } from "./parse-route.js";
 import { causeMessage, HandoffApiError, HOSTED_DEMO_ORIGIN, HOW_IT_WORKS, SELF_HOST_URL, statusError } from "./user-facing.js";
 
-const START_COMMAND = "podaj wait API_KEY";
+const START_COMMAND = "podaj wait";
 
 const Row = Schema.Struct({ id: Schema.String, key: Schema.String, revealed: Schema.Boolean, value: Schema.String });
 const Status = Schema.Union([
@@ -24,6 +24,7 @@ const Status = Schema.Union([
 export const ModelSchema = Schema.Struct({
   page: Schema.Literals(["landing", "compose"]),
   hostedDemo: Schema.Boolean,
+  commandCopied: Schema.Boolean,
   sender: Schema.Option(Sender),
   nextRowId: Schema.Number,
   rows: Schema.Array(Row),
@@ -133,7 +134,7 @@ const SendHandoff = DefineCommand("SendHandoff", {
 
 export const init = (route: AppRoute, origin = ""): ReturnType<Runtime.ApplicationInit<Model, typeof Message.Type>> => {
   const model: Model = {
-    page: route.page, hostedDemo: origin === HOSTED_DEMO_ORIGIN, sender: Option.none(),
+    page: route.page, hostedDemo: origin === HOSTED_DEMO_ORIGIN, commandCopied: false, sender: Option.none(),
     nextRowId: 2, rows: [newRow(1)], sending: false, sent: false, status: hiddenStatus(),
   };
   if (route.page === "landing") { return { model }; }
@@ -147,9 +148,9 @@ export const update = (model: Model, message: Message) => Message.match<Update.R
   ChangedRowKey: ({ key, rowId }) => ({ model: locked(model) ? model : { ...model, rows: model.rows.map((row) => row.id === rowId ? { ...row, key } : row) } }),
   ChangedRowValue: ({ value, rowId }) => ({ model: locked(model) ? model : { ...model, rows: model.rows.map((row) => row.id === rowId ? { ...row, value } : row) } }),
   ClickedCopyCommand: () => model.page === "landing"
-    ? { model: { ...model, status: hiddenStatus() }, commands: [CopyCommand()] } : { model },
-  SucceededCopyCommand: () => ({ model: { ...model, status: { _tag: "Ok", text: "Command copied." } } }),
-  FailedCopyCommand: () => ({ model: { ...model, status: statusError("Couldn't copy. Select the command and copy it manually.") } }),
+    ? { model: { ...model, commandCopied: false, status: hiddenStatus() }, commands: [CopyCommand()] } : { model },
+  SucceededCopyCommand: () => ({ model: { ...model, commandCopied: true, status: hiddenStatus() } }),
+  FailedCopyCommand: () => ({ model: { ...model, commandCopied: false, status: statusError("Couldn't copy. Select the command and copy it manually.") } }),
   ClickedAdd: () => ({ model: locked(model) ? model : { ...model, rows: [...model.rows, newRow(model.nextRowId)], nextRowId: model.nextRowId + 1 } }),
   ClickedRemoveRow: ({ rowId }) => ({ model: locked(model) || model.rows.length <= 1 ? model : { ...model, rows: model.rows.filter((row) => row.id !== rowId) } }),
   ClickedToggleReveal: ({ rowId }) => ({ model: locked(model) ? model : { ...model, rows: model.rows.map((row) => row.id === rowId ? { ...row, revealed: !row.revealed } : row) } }),
@@ -264,7 +265,7 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
       h.p([h.Class("compose-hint")], ["Open the fill link from your CLI."]),
       h.pre([h.Class("cli-command")], [
         h.code([], [START_COMMAND]),
-        h.button([h.Class("btn command-copy"), h.Type("button"), h.AriaLabel("copy command"), h.OnClick(Message.ClickedCopyCommand())], [model.status._tag === "Ok" ? "copied" : "copy"]),
+        h.button([h.Class("btn command-copy"), h.Type("button"), h.AriaLabel("copy command"), h.OnClick(Message.ClickedCopyCommand())], [model.commandCopied ? "copied" : "copy"]),
       ]),
       statusView(model, h),
     ]),

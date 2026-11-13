@@ -69,8 +69,15 @@ describe("CLI-created human fill form", () => {
     expect(writeText).not.toHaveBeenCalled();
     const clicked = update(initial.model, Message.ClickedCopyCommand());
     const copied = update(clicked.model, await run(clicked));
-    expect(writeText).toHaveBeenCalledExactlyOnceWith("podaj wait API_KEY");
-    expect(copied.model.status).toEqual({ _tag: "Ok", text: "Command copied." });
+    expect(writeText).toHaveBeenCalledExactlyOnceWith("podaj wait");
+    expect(copied.model.commandCopied).toBe(true);
+    expect(copied.model.status).toEqual({ _tag: "Hidden" });
+    Scene.scene({ update, view },
+      Scene.given(copied.model),
+      Scene.expect(Scene.selector(".status")).toBeAbsent(),
+      Scene.expect(Scene.role("button", { name: "copy command" })).toExist(),
+    );
+    expect(update(copied.model, Message.ClickedCopyCommand()).model.commandCopied).toBe(false);
     noCommands(copied);
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -80,6 +87,7 @@ describe("CLI-created human fill form", () => {
     vi.stubGlobal("navigator", { clipboard });
     const clicked = update(init({ page: "landing" }).model, Message.ClickedCopyCommand());
     const failed = update(clicked.model, await run(clicked));
+    expect(failed.model.commandCopied).toBe(false);
     expect(failed.model.status).toEqual({ _tag: "Error", text: "Couldn't copy. Select the command and copy it manually." });
     noCommands(failed);
     expect(fetchMock).not.toHaveBeenCalled();
