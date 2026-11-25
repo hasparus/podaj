@@ -347,6 +347,11 @@ button:focus-visible,
   color: var(--muted);
 }
 
+.mobile-safari .site-footer {
+  /* The shell fills 100vh, including the area behind Safari’s toolbar. */
+  padding-bottom: calc(1.25rem + max(5rem, 100vh - 100svh, env(safe-area-inset-bottom)));
+}
+
 @media (any-pointer: coarse), (max-width: 40rem) {
   :root {
     --row-action-size: 2.75rem;
