@@ -5,6 +5,13 @@ import { Runtime } from "foldkit";
 import { init, ModelSchema, update, view } from "./app.js";
 import { parseAppRoute } from "./parse-route.js";
 
+if (
+  navigator.vendor === "Apple Computer, Inc." &&
+  /Version\/\S+ Mobile\/\S+ Safari\//u.test(navigator.userAgent)
+) {
+  document.documentElement.classList.add("mobile-safari");
+}
+
 const container = document.querySelector("#app");
 if (!(container instanceof HTMLElement)) {
   throw new TypeError("#app missing");
